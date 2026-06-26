@@ -1,0 +1,16 @@
+# Normalize line endings: store LF in the repo, check out native on each OS.
+# Keeps the macOS-first / Windows-later workflow free of CRLF churn.
+* text=auto eol=lf
+
+# Binary assets — never alter
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.pdf binary
+*.dmg binary
+*.app binary
+*.exe binary
+*.msi binary
