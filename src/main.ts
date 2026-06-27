@@ -10,7 +10,9 @@
 
 import "./styles.css";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { Store, type AppState, type Bot, isFirstRun } from "./state";
+import { ConnectionController } from "./connection";
 import {
   renderSidebar,
   renderStatusBar,
@@ -48,11 +50,38 @@ const bots = new BotsController({
   dispatch: (action) => store.dispatch(action),
   confirm: (message) => window.confirm(message),
   onDisconnect: (botId) => {
-    // U4 owns the real teardown; until then, reflect the operator intent so the
-    // affordance is live and the state model exercised.
-    store.dispatch({ type: "disconnect", botId });
+    // U4 real teardown: invoke the backend `disconnect`, then reflect the
+    // disconnected state.
+    void connection.disconnect(botId);
   },
   renderForm: (form: BotFormState | null) => renderForm(form),
+});
+
+/**
+ * Connection controller (U4): bridges the backend connection actor's events to
+ * the KTD9 store and exposes connect/teardown/trust. The host-key trust prompt
+ * defaults to `window.confirm` here; U7 replaces it with the fingerprint modal.
+ */
+const connection = new ConnectionController({
+  backend: {
+    connect: () => invoke<string>("connect"),
+    disconnect: () => invoke<void>("disconnect"),
+    trustHost: (host: string, trust: boolean) =>
+      invoke<void>("trust_host", { host, trust }),
+    removeKnownHost: (host: string) =>
+      invoke<void>("remove_known_host", { host }),
+  },
+  listen: (event, handler) =>
+    listen(event, (e) => handler(e.payload as never)),
+  dispatch: (action) => store.dispatch(action),
+  currentBotId: () => store.getState().selectedBotId,
+  promptTrust: (fingerprint, host) =>
+    Promise.resolve(
+      window.confirm(
+        `Trust the host key for ${host}?\n\nSHA-256 fingerprint:\n${fingerprint}\n\n` +
+          "Only accept this if the fingerprint matches the bot you set up.",
+      ),
+    ),
 });
 
 // Terminals are created once and re-used across state changes.
@@ -212,6 +241,13 @@ function boot(): void {
     .catch(() => {
       // No key yet — leave the panel in its "generate" state silently.
     });
+
+  // U4: install the backend connection-event → store bridge so the staged
+  // pipeline drives the connecting/connected/connection-lost states. A failure
+  // here is non-fatal (events simply won't reach the store).
+  connection.bind().catch((e) => {
+    console.warn("connection event bind failed", e);
+  });
 
   // Handshake: confirm the webview can reach the backend. Informational.
   invoke("app_ready").catch((e) => {

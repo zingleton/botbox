@@ -4,4 +4,7 @@
 //! implementation. Later units add `connection`, `pipeline`, `channels`,
 //! `forward`, and `known_hosts` (see the plan's Output Structure).
 
+pub mod connection;
+pub mod known_hosts;
+pub mod pipeline;
 pub mod signer;

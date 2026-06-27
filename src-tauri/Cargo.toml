@@ -28,6 +28,31 @@ serde_json = "1"
 # random ids; no other uuid features needed.
 uuid = { version = "1", features = ["v4"] }
 
+# ── U4: embedded SSH client (connection actor + staged pipeline + TOFU) ──
+# Pinned on the 0.54 line: under our MSRV (1.77.2) this resolves to russh 0.54.5
+# (the 0.54 line declares rust-version 1.75). russh vendors a *fork* of ssh-key
+# (`internal-russh-forked-ssh-key`) that shares the **same OpenSSH wire format** as
+# U2's `ssh-key 0.6.7`, so keys interop *as OpenSSH strings* (the typed `PublicKey`
+# values are distinct Rust types — we bridge at the known-hosts seam via the
+# OpenSSH string, never by passing the types across). Crypto backend: `aws-lc-rs`
+# (russh's default; builds cleanly on macOS). `ring` is the documented alternative;
+# the iOS cross-compile chain (Risks & Dependencies) settles the final choice —
+# macOS works with either.
+russh = { version = "0.54", default-features = false, features = [
+  "aws-lc-rs",
+  "flate2",
+] }
+# Async runtime the connection actor + driver task run on. Tauri already pulls
+# tokio; we depend on it directly for the actor's tasks, channels, and timeouts.
+tokio = { version = "1", features = [
+  "rt-multi-thread",
+  "macros",
+  "sync",
+  "time",
+  "net",
+  "io-util",
+] }
+
 # ── U2: key generation + signer abstraction ──
 # `ssh-key` produces/consumes the OpenSSH public & private formats. We pin the
 # 0.6 line (0.6.7) deliberately: russh 0.54 (the version U4 resolves to under

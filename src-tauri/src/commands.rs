@@ -19,10 +19,18 @@
 //! - No command's `Ok`/`Err` value carries private key bytes; `SignerError`'s
 //!   `Display` is redaction-safe and `SecretBytes` redacts in `Debug`.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use serde::Serialize;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::keychain::default_key_store;
+use crate::ssh::connection::{
+    self, host_part, ConnectConfig, ConnectionManager, HostKeyPrompt, TrustResponse,
+};
+use crate::ssh::known_hosts::{JsonKnownHostsStore, KnownHosts};
 use crate::ssh::signer::{Ed25519Signer, Signer};
 use crate::store::{Bot, BotInput, BotInventory, Inventory, JsonBotStore};
 
@@ -180,6 +188,304 @@ pub fn select_bot(app: tauri::AppHandle, id: Option<String>) -> Result<(), Strin
     inventory(&app)?
         .select(id.as_deref())
         .map_err(|e| e.to_string())
+}
+
+// ── Connection commands (U4 / R7, R16, R11) ─────────────────────────────────
+//
+// The connection layer holds one active connection (validate-before-swap) and the
+// TOFU known-hosts store. State lives in [`SshState`], registered via Tauri
+// `manage` in `lib.rs`. Connect runs the staged pipeline (`ssh::connection`),
+// emitting frontend events for stage progress, the host-key trust prompt, and the
+// terminal outcome; U7 renders each error class.
+//
+// Frontend event contract (consumed by `state.ts` dispatchers):
+//   - `connect-stage`     { stage }                     → connecting progress
+//   - `host-key-prompt`   { host, fingerprint }         → trust modal (await answer)
+//   - `connected`         { botId }                     → live
+//   - `connect-failed`    { kind, stage, message }      → idle + error (U7)
+//   - `connection-lost`   { botId, kind, message }      → connection-lost (U7)
+//
+// The host-key prompt is answered out-of-band by the `trust_host` command, which
+// resolves the pending oneshot keyed by host.
+
+/// Default SSH username for bot connections. The live Hermes deploy logs in as
+/// `root` (see `deploy/hetzner`); per-bot username override is a later refinement.
+const DEFAULT_SSH_USERNAME: &str = "root";
+/// Default SSH port appended to a bot `host` that carries no explicit port.
+const DEFAULT_SSH_PORT: u16 = 22;
+
+/// Tauri-managed connection state (one per app): the active-connection manager and
+/// the map of pending host-key trust prompts (host → responder).
+pub struct SshState {
+    manager: Arc<ConnectionManager>,
+    /// Pending trust prompts awaiting the operator's `trust_host` answer.
+    pending_trust: Arc<AsyncMutex<HashMap<String, tokio::sync::oneshot::Sender<TrustResponse>>>>,
+}
+
+impl Default for SshState {
+    fn default() -> Self {
+        Self {
+            manager: Arc::new(ConnectionManager::new()),
+            pending_trust: Arc::new(AsyncMutex::new(HashMap::new())),
+        }
+    }
+}
+
+impl SshState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Serializable connect failure for the `connect-failed` / `connection-lost`
+/// events — exactly the frontend `ConnectionError` shape (kind + stage + message).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectFailedPayload {
+    kind: &'static str,
+    stage: &'static str,
+    message: String,
+}
+
+/// `connect-stage` event payload.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StagePayload {
+    stage: &'static str,
+}
+
+/// `host-key-prompt` event payload.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostKeyPromptPayload {
+    host: String,
+    fingerprint: String,
+}
+
+/// `connected` carries the bot id.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BotIdPayload {
+    bot_id: String,
+}
+
+/// `connection-lost` carries the bot id + the error class/message (U7 renders the
+/// reconnect affordance).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectionLostPayload {
+    bot_id: String,
+    kind: &'static str,
+    message: String,
+}
+
+/// Resolve the bot to connect: the selected bot id must match a saved bot.
+fn selected_bot(app: &tauri::AppHandle) -> Result<Bot, String> {
+    let inv = inventory(app)?.inventory().map_err(|e| e.to_string())?;
+    let id = inv
+        .selected_bot_id
+        .ok_or_else(|| "no bot is selected".to_string())?;
+    inv.bots
+        .into_iter()
+        .find(|b| b.id == id)
+        .ok_or_else(|| "selected bot no longer exists".to_string())
+}
+
+/// Build the `host:port` dial string from a bot `host` (appends the default SSH
+/// port when the host has none; brackets bare IPv6).
+fn dial_addr(host: &str) -> String {
+    if host.starts_with('[') || host.rsplit_once(':').is_some_and(|(_, p)| p.parse::<u16>().is_ok())
+    {
+        // Already has a port (or is a bracketed literal with one).
+        host.to_string()
+    } else if host.contains(':') {
+        // Bare IPv6 literal — bracket it and add the port.
+        format!("[{host}]:{DEFAULT_SSH_PORT}")
+    } else {
+        format!("{host}:{DEFAULT_SSH_PORT}")
+    }
+}
+
+/// The known-hosts store over the Tauri app-data dir (0600), mirroring the bot
+/// inventory path resolution.
+fn known_hosts(app: &tauri::AppHandle) -> Result<Arc<KnownHosts<JsonKnownHostsStore>>, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("could not resolve app data dir: {e}"))?;
+    Ok(Arc::new(KnownHosts::new(JsonKnownHostsStore::new(dir))))
+}
+
+/// Connect to the selected bot over `russh` (R7). Runs the staged pipeline with
+/// validate-before-swap: a successful connect tears down any prior active
+/// connection; a failure leaves it intact (the pipeline never reaches `install`).
+///
+/// Returns the connected bot id on success; on failure returns the
+/// frontend-shaped error (the same payload also rides the `connect-failed` event).
+#[tauri::command]
+pub async fn connect(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SshState>,
+) -> Result<String, ConnectFailedString> {
+    let bot = selected_bot(&app).map_err(ConnectFailedString::plain)?;
+    let addr = dial_addr(&bot.host);
+    let host = host_part(&addr);
+
+    let signer: Arc<dyn Signer> = Arc::new(signer());
+    let decider = known_hosts(&app).map_err(ConnectFailedString::plain)?;
+    let manager = state.manager.clone();
+    let pending = state.pending_trust.clone();
+
+    // Begin-connect: the frontend already dispatched `begin-connect`; emit the
+    // initial stage so the UI shows tcp-connect progress.
+    emit_stage(&app, "tcp-connect");
+
+    // Prompt bridge: forward host-key prompts to the frontend and park the
+    // responder under the host so `trust_host` can resolve it.
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::channel::<HostKeyPrompt>(4);
+    let app_for_prompt = app.clone();
+    let prompt_task = tokio::spawn(async move {
+        while let Some(prompt) = prompt_rx.recv().await {
+            pending
+                .lock()
+                .await
+                .insert(prompt.host.clone(), prompt.responder);
+            let _ = app_for_prompt.emit(
+                "host-key-prompt",
+                HostKeyPromptPayload {
+                    host: prompt.host,
+                    fingerprint: prompt.fingerprint,
+                },
+            );
+        }
+    });
+
+    let cfg = ConnectConfig::for_user(DEFAULT_SSH_USERNAME);
+    let result = connection::connect(&addr, &cfg, signer, decider, prompt_tx).await;
+    prompt_task.abort();
+    // Clear any leftover pending prompt for this host (rejected/timed out).
+    state.pending_trust.lock().await.remove(&host);
+
+    match result {
+        Ok(conn) => {
+            // Take the loss-event stream BEFORE installing, so the watcher does not
+            // need to reach back into the manager's lock. When the driver reports
+            // Lost, emit `connection-lost` so the UI offers reconnect rather than a
+            // frozen terminal.
+            let events = conn.take_events().await;
+            let bot_id = bot.id.clone();
+            if let Some(mut rx) = events {
+                let app_for_loss = app.clone();
+                tokio::spawn(async move {
+                    if let Some(connection::ConnectionEvent::Lost) = rx.recv().await {
+                        let _ = app_for_loss.emit(
+                            "connection-lost",
+                            ConnectionLostPayload {
+                                bot_id: bot_id.clone(),
+                                kind: "connection-lost",
+                                message: format!("connection to bot {bot_id} was lost"),
+                            },
+                        );
+                    }
+                });
+            }
+
+            // Validate-before-swap: install only now that auth succeeded — this
+            // tears down any prior active connection.
+            manager.install(conn).await;
+
+            let _ = app.emit("connected", BotIdPayload { bot_id: bot.id.clone() });
+            Ok(bot.id)
+        }
+        Err(e) => {
+            let payload = ConnectFailedPayload {
+                kind: e.kind.as_kind(),
+                stage: e.stage.as_str(),
+                message: e.message.clone(),
+            };
+            let _ = app.emit("connect-failed", payload.clone());
+            Err(ConnectFailedString::from_payload(payload))
+        }
+    }
+}
+
+/// Answer an open host-key trust prompt (the operator clicked Trust/Reject). Keyed
+/// by host; resolves the parked responder so the handshake proceeds or aborts.
+#[tauri::command]
+pub async fn trust_host(
+    state: tauri::State<'_, SshState>,
+    host: String,
+    trust: bool,
+) -> Result<(), String> {
+    let responder = state.pending_trust.lock().await.remove(&host);
+    match responder {
+        Some(tx) => {
+            let answer = if trust {
+                TrustResponse::Trust
+            } else {
+                TrustResponse::Reject
+            };
+            tx.send(answer)
+                .map_err(|_| "trust prompt is no longer awaiting an answer".to_string())
+        }
+        None => Err(format!("no pending host-key prompt for {host}")),
+    }
+}
+
+/// Remove the saved key for a host so a changed-key mismatch can be re-trusted
+/// (R16). This is the explicit recovery step a mismatch requires; it never
+/// auto-trusts the new key — the next connect re-prompts.
+#[tauri::command]
+pub async fn remove_known_host(app: tauri::AppHandle, host: String) -> Result<(), String> {
+    let kh = known_hosts(&app)?;
+    kh.remove(&host).map_err(|e| e.to_string())
+}
+
+/// Tear down the active connection (operator Disconnect; R7/KTD9). Idempotent: a
+/// no-op when nothing is connected.
+#[tauri::command]
+pub async fn disconnect(state: tauri::State<'_, SshState>) -> Result<(), String> {
+    state.manager.disconnect().await;
+    Ok(())
+}
+
+fn emit_stage(app: &tauri::AppHandle, stage: &'static str) {
+    let _ = app.emit("connect-stage", StagePayload { stage });
+}
+
+/// A connect failure rendered as a JSON string for the command `Err` channel,
+/// carrying the same kind/stage/message the `connect-failed` event does (the
+/// frontend can use either path). For a non-pipeline failure (e.g. no bot
+/// selected) it degrades to a plain message with no stage.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectFailedString {
+    kind: String,
+    stage: Option<String>,
+    message: String,
+}
+
+impl ConnectFailedString {
+    fn plain(message: String) -> Self {
+        Self {
+            kind: "local-signer-failure".to_string(),
+            stage: None,
+            message,
+        }
+    }
+    fn from_payload(p: ConnectFailedPayload) -> Self {
+        Self {
+            kind: p.kind.to_string(),
+            stage: Some(p.stage.to_string()),
+            message: p.message,
+        }
+    }
+}
+
+impl std::fmt::Display for ConnectFailedString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
 }
 
 #[cfg(test)]

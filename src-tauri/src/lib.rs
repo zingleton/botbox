@@ -33,6 +33,10 @@ pub fn run() {
         // the capability file so it cannot open arbitrary URLs/paths. U6 uses
         // it to open the loopback dashboard URL.
         .plugin(tauri_plugin_opener::init())
+        // U4 connection state: one active connection (validate-before-swap) +
+        // the pending host-key trust prompts. App-defined commands reach it via
+        // `tauri::State`; no plugin scope is involved (KTD8 boundary unchanged).
+        .manage(commands::SshState::new())
         .invoke_handler(tauri::generate_handler![
             commands::app_ready,
             commands::generate_key,
@@ -44,6 +48,10 @@ pub fn run() {
             commands::update_bot,
             commands::remove_bot,
             commands::select_bot,
+            commands::connect,
+            commands::disconnect,
+            commands::trust_host,
+            commands::remove_known_host,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Botbox");
