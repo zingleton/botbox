@@ -13,6 +13,7 @@ import {
   initialState,
   isFirstRun,
   isIdle,
+  hasSelectedBot,
   type Bot,
 } from "./state";
 import { renderSidebar, renderStatusBar, renderTunnelBar } from "./render";
@@ -38,6 +39,41 @@ describe("state model (KTD9)", () => {
     const s = reduce(initialState(), { type: "set-bots", bots: [sampleBot] });
     expect(isFirstRun(s)).toBe(false);
     expect(isIdle(s)).toBe(true);
+  });
+
+  it("defaults the content view to bots", () => {
+    expect(initialState().view).toBe("bots");
+  });
+
+  it("set-view changes the view without touching connection or selection", () => {
+    let s = reduce(initialState(), { type: "set-bots", bots: [sampleBot] });
+    s = reduce(s, { type: "select-bot", botId: "bot-1" });
+    s = reduce(s, { type: "connected", botId: "bot-1" });
+    const before = s.connection;
+    for (const view of ["settings", "hermes", "linux", "bots"] as const) {
+      s = reduce(s, { type: "set-view", view });
+      expect(s.view).toBe(view);
+    }
+    // connection + selection are untouched by view navigation.
+    expect(s.connection).toBe(before);
+    expect(s.selectedBotId).toBe("bot-1");
+  });
+
+  it("set-view to the current view is a no-op (same reference)", () => {
+    const s = initialState();
+    expect(reduce(s, { type: "set-view", view: "bots" })).toBe(s);
+  });
+
+  it("a connection action does not change the view", () => {
+    let s = reduce(initialState(), { type: "set-view", view: "settings" });
+    s = reduce(s, { type: "begin-connect", botId: "bot-1" });
+    expect(s.view).toBe("settings");
+  });
+
+  it("hasSelectedBot reflects the selection", () => {
+    expect(hasSelectedBot(initialState())).toBe(false);
+    const s = reduce(initialState(), { type: "select-bot", botId: "bot-1" });
+    expect(hasSelectedBot(s)).toBe(true);
   });
 
   it("walks the connect pipeline through the KTD9 phases", () => {

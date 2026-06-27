@@ -102,11 +102,23 @@ export type ConnectionState =
   | { phase: "disconnected"; botId: string }
   | { phase: "connection-lost"; botId: string; error: ConnectionError };
 
+// ── Content view (single-panel nav). Which surface the content area shows. ──
+
+/**
+ * The single content area shows exactly one of these at a time (the top-nav
+ * re-layout). `bots`/`settings` are dialog panels; `hermes`/`linux` are the two
+ * persistent terminals (Hermes attach / host shell). Selection of a view is pure
+ * UI state, independent of the connection phase.
+ */
+export type ContentView = "bots" | "settings" | "hermes" | "linux";
+
 export interface AppState {
   bots: Bot[];
   /** Currently selected bot (selection != connection). */
   selectedBotId: string | null;
   connection: ConnectionState;
+  /** Which panel the single content area shows. Independent of connection phase. */
+  view: ContentView;
   /** Last error to surface (U7), independent of phase so a transient failure
    *  during `connecting` can be shown without losing `idle`. */
   lastError: ConnectionError | null;
@@ -117,6 +129,7 @@ export function initialState(): AppState {
     bots: [],
     selectedBotId: null,
     connection: { phase: "idle" },
+    view: "bots",
     lastError: null,
   };
 }
@@ -127,6 +140,8 @@ export type Action =
   // Inventory (U3 dispatches after backend round-trips).
   | { type: "set-bots"; bots: Bot[] }
   | { type: "select-bot"; botId: string | null }
+  // Content view (single-panel nav). Pure UI state, no connection coupling.
+  | { type: "set-view"; view: ContentView }
   // Connect pipeline (U4).
   | { type: "begin-connect"; botId: string }
   | { type: "connect-stage"; stage: ConnectStage }
@@ -153,6 +168,12 @@ export function reduce(state: AppState, action: Action): AppState {
 
     case "select-bot":
       return { ...state, selectedBotId: action.botId };
+
+    case "set-view":
+      // Pure UI navigation: never touches connection state. A no-op (same
+      // reference) when the view is unchanged so the store does not notify.
+      if (state.view === action.view) return state;
+      return { ...state, view: action.view };
 
     case "begin-connect":
       return {
@@ -288,6 +309,12 @@ export function isFirstRun(state: AppState): boolean {
 
 export function isIdle(state: AppState): boolean {
   return state.connection.phase === "idle";
+}
+
+/** Whether a bot is selected — drives the nav connect control and the
+ *  selected-bot line (single-panel re-layout). */
+export function hasSelectedBot(state: AppState): boolean {
+  return state.selectedBotId !== null;
 }
 
 /**
