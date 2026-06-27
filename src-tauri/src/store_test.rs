@@ -12,6 +12,7 @@ fn input(name: &str, host: &str) -> BotInput {
     BotInput {
         name: name.to_string(),
         host: host.to_string(),
+        username: None,
         attach_command: None,
         dashboard_port: None,
     }
@@ -38,10 +39,12 @@ fn add_treats_whitespace_only_attach_command_as_blank() {
         .add(BotInput {
             name: "B".into(),
             host: "h".into(),
+            username: Some("   ".into()),
             attach_command: Some("   ".into()),
             dashboard_port: Some(0),
         })
         .unwrap();
+    assert_eq!(bot.username, DEFAULT_SSH_USERNAME);
     assert_eq!(bot.attach_command, DEFAULT_ATTACH_COMMAND);
     assert_eq!(bot.dashboard_port, DEFAULT_DASHBOARD_PORT);
 }
@@ -53,10 +56,12 @@ fn add_keeps_explicit_overrides() {
         .add(BotInput {
             name: "B".into(),
             host: "h".into(),
+            username: Some("root".into()),
             attach_command: Some("docker exec -it hermes bash".into()),
             dashboard_port: Some(8443),
         })
         .unwrap();
+    assert_eq!(bot.username, "root");
     assert_eq!(bot.attach_command, "docker exec -it hermes bash");
     assert_eq!(bot.dashboard_port, 8443);
 }
@@ -88,6 +93,7 @@ fn update_changes_only_the_targeted_bot() {
             BotInput {
                 name: "B2".into(),
                 host: "9.9.9.9".into(),
+                username: None,
                 attach_command: Some("tmux attach -t other".into()),
                 dashboard_port: Some(1234),
             },
@@ -257,6 +263,7 @@ fn surprising_characters_round_trip_without_corrupting_the_store() {
         inv.add(BotInput {
             name: gnarly_name.into(),
             host: gnarly_host.into(),
+            username: None,
             attach_command: Some(gnarly_attach.into()),
             dashboard_port: Some(65535),
         })

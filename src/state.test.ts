@@ -21,6 +21,7 @@ const sampleBot: Bot = {
   id: "bot-1",
   name: "Hermes-A",
   host: "10.0.0.5",
+  username: "",
   attachCommand: "",
   dashboardPort: 8080,
 };

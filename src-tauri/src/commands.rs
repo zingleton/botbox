@@ -210,10 +210,6 @@ pub fn select_bot(app: tauri::AppHandle, id: Option<String>) -> Result<(), Strin
 //
 // The host-key prompt is answered out-of-band by the `trust_host` command, which
 // resolves the pending oneshot keyed by host.
-
-/// Default SSH username for bot connections. The live Hermes deploy logs in as
-/// `root` (see `deploy/hetzner`); per-bot username override is a later refinement.
-const DEFAULT_SSH_USERNAME: &str = "root";
 /// Default SSH port appended to a bot `host` that carries no explicit port.
 const DEFAULT_SSH_PORT: u16 = 22;
 
@@ -377,7 +373,7 @@ pub async fn connect(
         }
     });
 
-    let cfg = ConnectConfig::for_user(DEFAULT_SSH_USERNAME);
+    let cfg = ConnectConfig::for_user(&bot.username);
     let result = connection::connect(&addr, &cfg, signer, decider, prompt_tx).await;
     prompt_task.abort();
     // Clear any leftover pending prompt for this host (rejected/timed out).

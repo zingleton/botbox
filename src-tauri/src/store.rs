@@ -41,6 +41,12 @@ pub const DEFAULT_ATTACH_COMMAND: &str = "tmux attach -t hermes";
 /// (`deploy/hetzner/README.md`, `dashboard.sh`).
 pub const DEFAULT_DASHBOARD_PORT: u16 = 9119;
 
+/// Canonical default SSH username (R6). Source of truth: the live Hetzner deploy
+/// runs the Hermes agent under the Unix user `hermes` and its tmux session lives
+/// there (`deploy/hetzner/cloud-init.yaml`, `lib.sh` `REMOTE_USER`). Connecting
+/// as the right user is what lets `tmux attach -t hermes` find the session.
+pub const DEFAULT_SSH_USERNAME: &str = "hermes";
+
 /// Inventory file name within the app-data dir.
 const BOTS_FILE: &str = "bots.json";
 
@@ -57,6 +63,9 @@ pub struct Bot {
     pub id: String,
     pub name: String,
     pub host: String,
+    /// SSH login user. Always concrete on a persisted bot — the default
+    /// ([`DEFAULT_SSH_USERNAME`]) is baked in at add time (R6).
+    pub username: String,
     /// Hermes attach command. Always concrete on a persisted bot — the default
     /// is baked in at add time, never left blank (R6).
     pub attach_command: String,
@@ -72,6 +81,9 @@ pub struct Bot {
 pub struct BotInput {
     pub name: String,
     pub host: String,
+    /// Blank/absent => [`DEFAULT_SSH_USERNAME`].
+    #[serde(default)]
+    pub username: Option<String>,
     /// Blank/absent => [`DEFAULT_ATTACH_COMMAND`].
     #[serde(default)]
     pub attach_command: Option<String>,
@@ -81,6 +93,14 @@ pub struct BotInput {
 }
 
 impl BotInput {
+    /// Resolve the SSH username, applying the default when blank (trimmed).
+    fn resolved_username(&self) -> String {
+        match self.username.as_deref().map(str::trim) {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => DEFAULT_SSH_USERNAME.to_string(),
+        }
+    }
+
     /// Resolve the attach command, applying the default when blank (trimmed).
     fn resolved_attach_command(&self) -> String {
         match self.attach_command.as_deref().map(str::trim) {
@@ -193,6 +213,7 @@ impl<S: BotStore> Inventory<S> {
             id: uuid::Uuid::new_v4().to_string(),
             name: name.to_string(),
             host: host.to_string(),
+            username: input.resolved_username(),
             attach_command: input.resolved_attach_command(),
             dashboard_port: input.resolved_dashboard_port(),
         };
@@ -225,6 +246,7 @@ impl<S: BotStore> Inventory<S> {
 
         slot.name = name.to_string();
         slot.host = host.to_string();
+        slot.username = input.resolved_username();
         slot.attach_command = input.resolved_attach_command();
         slot.dashboard_port = input.resolved_dashboard_port();
         let updated = slot.clone();

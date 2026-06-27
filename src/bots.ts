@@ -44,6 +44,7 @@ import {
  */
 export const DEFAULT_ATTACH_PLACEHOLDER = "tmux attach -t hermes";
 export const DEFAULT_PORT_PLACEHOLDER = "9119";
+export const DEFAULT_USERNAME_PLACEHOLDER = "hermes";
 
 /** `null` => the form is closed. `{ editing: null }` => adding a new bot. */
 export interface BotFormState {
@@ -51,6 +52,8 @@ export interface BotFormState {
   editing: Bot | null;
   name: string;
   host: string;
+  /** Kept as free text; blank opts into the default SSH user (`hermes`). */
+  username: string;
   attachCommand: string;
   /** Kept as a string so a blank field stays blank (opts into the default). */
   dashboardPort: string;
@@ -65,6 +68,7 @@ export function emptyForm(editing: Bot | null = null): BotFormState {
     editing,
     name: editing?.name ?? "",
     host: editing?.host ?? "",
+    username: editing?.username ?? "",
     attachCommand: editing?.attachCommand ?? "",
     dashboardPort: editing ? String(editing.dashboardPort) : "",
     error: null,
@@ -256,6 +260,16 @@ export function renderBotForm(
   );
   wrap.appendChild(
     field(
+      "SSH user",
+      "bot-username",
+      form.username,
+      DEFAULT_USERNAME_PLACEHOLDER,
+      (v) => handlers.onField({ username: v }),
+      "Leave blank for the default.",
+    ),
+  );
+  wrap.appendChild(
+    field(
       "Attach command",
       "bot-attach",
       form.attachCommand,
@@ -346,6 +360,7 @@ function field(
 export interface BotInput {
   name: string;
   host: string;
+  username?: string;
   attachCommand?: string;
   dashboardPort?: number;
 }
@@ -478,10 +493,12 @@ export class BotsController {
     }
 
     const attach = f.attachCommand.trim();
+    const username = f.username.trim();
     const input: BotInput = {
       name,
       host,
       // Omit blank fields so the backend applies the defaults.
+      username: username || undefined,
       attachCommand: attach || undefined,
       dashboardPort,
     };

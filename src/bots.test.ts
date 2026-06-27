@@ -23,7 +23,14 @@ import {
 } from "./bots";
 
 function bot(id: string, name = id, host = "10.0.0.1"): Bot {
-  return { id, name, host, attachCommand: "tmux attach -t hermes", dashboardPort: 9119 };
+  return {
+    id,
+    name,
+    host,
+    username: "hermes",
+    attachCommand: "tmux attach -t hermes",
+    dashboardPort: 9119,
+  };
 }
 
 const noopHandlers = {
@@ -151,6 +158,7 @@ class FakeBackend implements BotBackend {
       id: `id-${this.seq++}`,
       name: input.name,
       host: input.host,
+      username: input.username ?? "hermes",
       attachCommand: input.attachCommand ?? "tmux attach -t hermes",
       dashboardPort: input.dashboardPort ?? 9119,
     };

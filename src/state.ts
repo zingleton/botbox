@@ -25,6 +25,8 @@ export interface Bot {
   id: string;
   name: string;
   host: string;
+  /** SSH login user; empty => use default (`hermes`) (U3/U5). */
+  username: string;
   /** Hermes attach command; empty => use default (U3/U5). */
   attachCommand: string;
   /** Remote dashboard port; U6 forwards it to a loopback port. */
