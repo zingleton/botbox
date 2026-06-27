@@ -65,13 +65,14 @@ describe("renderBotList — item states from the KTD9 store", () => {
     expect(region.querySelector('[data-action="disconnect"]')).toBeNull();
   });
 
-  it("marks the connected bot 'connected' and exposes Disconnect", () => {
+  it("marks the connected bot 'connected' with no per-item Disconnect (nav owns it)", () => {
     renderBotList(region, stateWith({ phase: "connected", botId: "a" }), noopHandlers);
     const a = region.querySelector('[data-bot-id="a"]')!;
     const b = region.querySelector('[data-bot-id="b"]')!;
     expect(a.getAttribute("data-state")).toBe("connected");
     expect(b.getAttribute("data-state")).toBe("default");
-    expect(a.querySelector('[data-action="disconnect"]')).not.toBeNull();
+    // The single Disconnect affordance lives in the top-bar nav, not per-item.
+    expect(a.querySelector('[data-action="disconnect"]')).toBeNull();
   });
 
   it("marks the in-flight bot 'transitioning' and locks the list", () => {

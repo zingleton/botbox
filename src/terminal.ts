@@ -81,6 +81,8 @@ export class TerminalPane {
   private resizeTimer: ReturnType<typeof setTimeout> | null = null;
   /** Whether the first resize after going live has been sent yet (SIGWINCH guard). */
   private firstResizeSent = false;
+  /** Whether this pane is the visible content surface (single-panel router). */
+  private visible = false;
 
   constructor(kind: PaneKind) {
     this.kind = kind;
@@ -156,7 +158,12 @@ export class TerminalPane {
    * terminals).
    */
   setVisible(visible: boolean): void {
-    if (visible) this.fit();
+    // Only act on the hidden→visible transition: fit once when the pane is
+    // revealed (so xterm measures the now-laid-out container and a live PTY gets
+    // a window_change). render() calls this on every store update, so without the
+    // transition guard we would re-fit the visible pane on every unrelated change.
+    if (visible && !this.visible) this.fit();
+    this.visible = visible;
   }
 
   /** Re-fit to the container; safe to call before a PTY exists. */

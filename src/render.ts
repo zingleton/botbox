@@ -13,6 +13,7 @@
 import {
   isFirstRun,
   hasSelectedBot,
+  activeConnectionBotId,
   type AppState,
   type Bot,
   type ContentView,
@@ -325,8 +326,12 @@ export function renderSelectedBotLine(
   handlers: SelectedBotHandlers,
 ): void {
   region.replaceChildren();
-  if (!hasSelectedBot(state)) return;
-  const bot = state.bots.find((b) => b.id === state.selectedBotId);
+  // The line represents the bot whose terminals/dashboard the user is looking
+  // at: the live connection's bot when connected/connecting/lost (selection and
+  // connection are decoupled in the store), else the selected bot.
+  const botId = activeConnectionBotId(state) ?? state.selectedBotId;
+  if (!botId) return;
+  const bot = state.bots.find((b) => b.id === botId);
   if (!bot) return;
 
   const name = document.createElement("span");

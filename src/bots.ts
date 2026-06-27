@@ -167,18 +167,8 @@ function renderBotItem(
   }
   li.appendChild(main);
 
-  // Connected: expose the Disconnect affordance + a highlight (via the class).
-  if (itemState === "connected") {
-    const disconnect = document.createElement("button");
-    disconnect.className = "btn btn--danger bot-item__disconnect";
-    disconnect.textContent = "Disconnect";
-    disconnect.setAttribute("data-action", "disconnect");
-    disconnect.addEventListener("click", (e) => {
-      e.stopPropagation();
-      handlers.onDisconnect(bot.id);
-    });
-    li.appendChild(disconnect);
-  }
+  // Connected: the bot keeps its highlight (via the `--connected` class); the
+  // single Disconnect affordance lives in the top-bar nav, not per-item.
 
   // Edit / remove (hidden while the list is locked or this item is the live
   // connection — you can't edit a bot you're connected to mid-session).

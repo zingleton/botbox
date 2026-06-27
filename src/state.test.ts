@@ -370,6 +370,17 @@ describe("selected-bot line (U3)", () => {
     expect(region.childElementCount).toBe(0);
   });
 
+  it("shows the connected bot even when selection is decoupled from the connection", () => {
+    // selectedBotId null but a live connection on bot-1 (selection != connection).
+    let s = reduce(initialState(), { type: "set-bots", bots: [sampleBot] });
+    s = reduce(s, { type: "connected", botId: sampleBot.id });
+    expect(s.selectedBotId).toBeNull();
+    renderSelectedBotLine(region, s, handlers());
+    expect(region.querySelector('[data-testid="selected-bot-name"]')?.textContent).toBe(
+      "Hermes-A",
+    );
+  });
+
   it("shows the bot name and Hermes/Dashboard/Linux links when selected", () => {
     renderSelectedBotLine(region, selected(), handlers());
     expect(region.querySelector('[data-testid="selected-bot-name"]')?.textContent).toBe(
