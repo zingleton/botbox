@@ -27,6 +27,10 @@ export interface ConnectionBackend {
   trustHost(host: string, trust: boolean): Promise<void>;
   /** Remove a saved host key (mismatch recovery). */
   removeKnownHost(host: string): Promise<void>;
+  /** (Re-)establish the dashboard tunnel; resolves with the loopback URL (U6). */
+  openTunnel(): Promise<string>;
+  /** Open the dashboard's loopback URL in the default browser (U6 / R13). */
+  openDashboard(url: string): Promise<void>;
 }
 
 /** Subscribe to a backend event; returns an unlisten fn. Matches Tauri's
@@ -56,6 +60,13 @@ interface ConnectionLostEvent {
   botId: string;
   kind: ConnectionErrorKind;
   message: string;
+}
+interface TunnelStatusEvent {
+  botId: string;
+  active: boolean;
+  url?: string;
+  errorKind?: ConnectionErrorKind;
+  message?: string;
 }
 
 export interface ConnectionDeps {
@@ -124,6 +135,23 @@ export class ConnectionController {
         });
       }),
     );
+
+    // U6: dashboard tunnel status → badge active/inactive + copyable URL +
+    // wrong-port error. An inactive status with an `errorKind` is the wrong-port
+    // surface (U7); an inactive status with none is a teardown.
+    this.unlisteners.push(
+      await this.deps.listen<TunnelStatusEvent>("tunnel-status", (p) => {
+        d({
+          type: "tunnel-status",
+          active: p.active,
+          url: p.url,
+          error:
+            p.errorKind !== undefined
+              ? { kind: p.errorKind, message: p.message ?? "" }
+              : undefined,
+        });
+      }),
+    );
   }
 
   /** Start a connect to the currently selected bot. Dispatches `begin-connect`
@@ -158,6 +186,31 @@ export class ConnectionController {
   /** Remove a saved host key (mismatch recovery; R16). */
   async removeKnownHost(host: string): Promise<void> {
     await this.deps.backend.removeKnownHost(host);
+  }
+
+  /** (Re-)establish the dashboard tunnel for the active connection (U6). The
+   *  backend emits `tunnel-status`, so on success the store updates via the
+   *  event; we surface a failure (wrong port) as a tunnel-status error action so
+   *  the connected view reflects it even if the command rejected. */
+  async openTunnel(): Promise<void> {
+    try {
+      await this.deps.backend.openTunnel();
+    } catch (e) {
+      const err = e as { kind?: ConnectionErrorKind; message?: string };
+      this.deps.dispatch({
+        type: "tunnel-status",
+        active: false,
+        error: {
+          kind: err.kind ?? "wrong-dashboard-port",
+          message: err.message ?? String(e),
+        },
+      });
+    }
+  }
+
+  /** Open the dashboard's loopback URL in the default browser (U6 / R13). */
+  async openDashboard(url: string): Promise<void> {
+    await this.deps.backend.openDashboard(url);
   }
 
   /** Remove the event listeners (teardown; not needed in the single-window v1). */

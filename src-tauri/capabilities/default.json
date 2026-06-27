@@ -1,9 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Botbox webview<->backend trust boundary (KTD8 / R18). This file is the permission allowlist: only the commands enumerated here are reachable from the webview. Every later unit that adds a backend command MUST add its `app:allow-*` permission here, or the command stays unreachable by design. Unused plugin scopes (e.g. opener) are intentionally NOT granted in U1.",
+  "description": "Botbox webview<->backend trust boundary (KTD8 / R18). This file is the permission allowlist: only the commands enumerated here are reachable from the webview. Every later unit that adds a backend command MUST add its `app:allow-*` permission here, or the command stays unreachable by design. App-defined commands reach the webview via `core:default`; only *plugin* commands need a scope entry. U6 grants the ONLY plugin scope in the app: the `opener` plugin's `open_url`, narrowly scoped to the loopback dashboard URLs so it can open `http://127.0.0.1:<port>` / `http://localhost:<port>` and nothing else.",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "http://127.0.0.1:*" },
+        { "url": "http://localhost:*" }
+      ]
+    }
   ]
 }

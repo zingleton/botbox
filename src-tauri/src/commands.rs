@@ -33,6 +33,7 @@ use crate::ssh::channels::{
 use crate::ssh::connection::{
     self, host_part, ConnectConfig, ConnectionManager, HostKeyPrompt, TrustResponse,
 };
+use crate::ssh::forward::{self, Forward};
 use crate::ssh::known_hosts::{JsonKnownHostsStore, KnownHosts};
 use crate::ssh::signer::{Ed25519Signer, Signer};
 use crate::store::{Bot, BotInput, BotInventory, Inventory, JsonBotStore};
@@ -232,6 +233,10 @@ pub struct SshState {
     pending_trust: Arc<AsyncMutex<HashMap<String, tokio::sync::oneshot::Sender<TrustResponse>>>>,
     /// The host + attach PTY channels for the active connection (U5).
     terminals: Arc<AsyncMutex<ActiveTerminals>>,
+    /// The active dashboard port-forward (U6). A child of the active connection:
+    /// it is bound after auth, torn down on disconnect / swap (flipping the tunnel
+    /// badge inactive), and replaced when a new connection's tunnel comes up.
+    forward: Arc<AsyncMutex<Option<Forward>>>,
 }
 
 impl Default for SshState {
@@ -240,6 +245,7 @@ impl Default for SshState {
             manager: Arc::new(ConnectionManager::new()),
             pending_trust: Arc::new(AsyncMutex::new(HashMap::new())),
             terminals: Arc::new(AsyncMutex::new(ActiveTerminals::default())),
+            forward: Arc::new(AsyncMutex::new(None)),
         }
     }
 }
@@ -290,6 +296,22 @@ struct ConnectionLostPayload {
     bot_id: String,
     kind: &'static str,
     message: String,
+}
+
+/// `tunnel-status` event payload (U6). Drives the tunnel UI: the active/inactive
+/// badge, the copyable local URL, and (on wrong-port) the error to surface.
+///
+/// `active` true carries the loopback `url`; `active` false (teardown or a wrong
+/// dashboard port) carries no url and, for a wrong port, the `errorKind` /
+/// `message` so U7 can render "nothing listening on port N".
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TunnelStatusPayload {
+    bot_id: String,
+    active: bool,
+    url: Option<String>,
+    error_kind: Option<&'static str>,
+    message: Option<String>,
 }
 
 /// Resolve the bot to connect: the selected bot id must match a saved bot.
@@ -389,8 +411,23 @@ pub async fn connect(
             let bot_id = bot.id.clone();
             if let Some(mut rx) = events {
                 let app_for_loss = app.clone();
+                let forward_for_loss = state.forward.clone();
                 tokio::spawn(async move {
                     if let Some(connection::ConnectionEvent::Lost) = rx.recv().await {
+                        // Mid-session loss: tear the dashboard forward down (frees the
+                        // port, aborts in-flight forwards) and flip the tunnel badge
+                        // inactive, then surface connection-lost for reconnect.
+                        close_forward(&forward_for_loss).await;
+                        let _ = app_for_loss.emit(
+                            "tunnel-status",
+                            TunnelStatusPayload {
+                                bot_id: bot_id.clone(),
+                                active: false,
+                                url: None,
+                                error_kind: None,
+                                message: None,
+                            },
+                        );
                         let _ = app_for_loss.emit(
                             "connection-lost",
                             ConnectionLostPayload {
@@ -405,11 +442,20 @@ pub async fn connect(
 
             // Validate-before-swap: install only now that auth succeeded — this
             // tears down any prior active connection. Close the prior connection's
-            // PTY channels first (their read tasks reference the old handle).
+            // PTY channels AND the prior dashboard forward first (their tasks
+            // reference the old handle); this flips the prior tunnel badge inactive.
             close_terminals(&state.terminals).await;
+            close_forward(&state.forward).await;
             manager.install(conn).await;
 
             let _ = app.emit("connected", BotIdPayload { bot_id: bot.id.clone() });
+
+            // U6: eager dashboard probe → bind loopback forward → open browser. The
+            // probe classifies a wrong port (KTD7) WITHOUT tearing the connection
+            // down (the host/attach terminals stay usable); a wrong port surfaces as
+            // an inactive tunnel carrying the wrong-port error (U7 renders it).
+            establish_dashboard_tunnel(&app, &state, &bot).await;
+
             Ok(bot.id)
         }
         Err(e) => {
@@ -460,7 +506,27 @@ pub async fn remove_known_host(app: tauri::AppHandle, host: String) -> Result<()
 /// no-op when nothing is connected. Closes the PTY channels first (stops their read
 /// tasks) and then the connection.
 #[tauri::command]
-pub async fn disconnect(state: tauri::State<'_, SshState>) -> Result<(), String> {
+pub async fn disconnect(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SshState>,
+) -> Result<(), String> {
+    // Tear down the dashboard forward first (frees the loopback port, aborts
+    // in-flight forwards) and flip the tunnel badge inactive (KTD7 lifecycle).
+    let had_forward = state.forward.lock().await.is_some();
+    close_forward(&state.forward).await;
+    if had_forward {
+        let bot_id = selected_bot(&app).map(|b| b.id).unwrap_or_default();
+        let _ = app.emit(
+            "tunnel-status",
+            TunnelStatusPayload {
+                bot_id,
+                active: false,
+                url: None,
+                error_kind: None,
+                message: None,
+            },
+        );
+    }
     close_terminals(&state.terminals).await;
     state.manager.disconnect().await;
     Ok(())
@@ -479,6 +545,181 @@ async fn close_terminals(terminals: &AsyncMutex<ActiveTerminals>) {
     if let Some(a) = attach {
         a.close().await;
     }
+}
+
+// ── Dashboard port-forward commands (U6 / R12, R13, R11 wrong-port) ──────────
+//
+// The dashboard forward is a CHILD of the active connection (KTD7): it is bound
+// after auth, stored in [`SshState::forward`], and torn down on disconnect / swap
+// (flipping the tunnel badge inactive). `establish_dashboard_tunnel` runs the eager
+// probe then binds; `open_tunnel` re-establishes it on demand; `open_dashboard`
+// opens the browser at the loopback URL via the scoped `opener` plugin (R13).
+//
+// Frontend event contract (consumed by `connection.ts`/`state.ts`):
+//   - `tunnel-status` { botId, active, url?, errorKind?, message? }
+//
+// `active:true` + `url` → badge active, copyable URL; `active:false` → badge
+// inactive (teardown) or, with `errorKind: "wrong-dashboard-port"`, the wrong-port
+// surface (U7).
+
+/// Tear down + clear the active dashboard forward (stops the accept loop, frees the
+/// loopback port, aborts in-flight forwards). Shared by disconnect, swap, and
+/// re-establish. Does NOT emit `tunnel-status` — the caller decides what to emit.
+async fn close_forward(forward: &AsyncMutex<Option<Forward>>) {
+    let prior = forward.lock().await.take();
+    if let Some(f) = prior {
+        f.close();
+    }
+}
+
+/// Run the eager dashboard probe and, on success, bind the loopback forward and
+/// emit the active tunnel status (+ auto-open the browser). A wrong port emits an
+/// inactive tunnel carrying the wrong-port error WITHOUT tearing the connection
+/// down (KTD7: the host/attach terminals stay usable). Best-effort: a failure to
+/// bind/probe never fails the connect — the connection is already live.
+async fn establish_dashboard_tunnel(app: &tauri::AppHandle, state: &SshState, bot: &Bot) {
+    // Emit the probe-dashboard stage so the connecting UI shows progress (KTD6).
+    emit_stage(app, "probe-dashboard");
+
+    let handle = match state.manager.with_active(|conn| conn.handle()).await {
+        Some(h) => h,
+        // Connection vanished between install and here — nothing to forward.
+        None => return,
+    };
+    let dashboard_host = forward_dashboard_host(&bot.host);
+
+    // Eager probe BEFORE binding the listener / opening the browser (KTD7).
+    if let Err(e) = forward::probe_dashboard_port(&handle, &dashboard_host, bot.dashboard_port).await
+    {
+        let _ = app.emit(
+            "tunnel-status",
+            TunnelStatusPayload {
+                bot_id: bot.id.clone(),
+                active: false,
+                url: None,
+                error_kind: Some(e.kind.as_kind()),
+                message: Some(e.message),
+            },
+        );
+        return;
+    }
+
+    // Probe OK → bind the loopback forward and store it as a connection child.
+    match forward::bind_and_forward(handle, &dashboard_host, bot.dashboard_port).await {
+        Ok(fwd) => {
+            let url = fwd.local_url();
+            *state.forward.lock().await = Some(fwd);
+            let _ = app.emit(
+                "tunnel-status",
+                TunnelStatusPayload {
+                    bot_id: bot.id.clone(),
+                    active: true,
+                    url: Some(url.clone()),
+                    error_kind: None,
+                    message: None,
+                },
+            );
+            // Open the browser only now that the listener is bound AND the
+            // connection is authenticated (KTD7 / R13).
+            open_url_via_opener(app, &url);
+        }
+        Err(e) => {
+            // Binding the loopback listener failed (rare). Surface as an inactive
+            // tunnel; the connection itself stays up.
+            let _ = app.emit(
+                "tunnel-status",
+                TunnelStatusPayload {
+                    bot_id: bot.id.clone(),
+                    active: false,
+                    url: None,
+                    error_kind: Some(e.kind.as_kind()),
+                    message: Some(e.message),
+                },
+            );
+        }
+    }
+}
+
+/// The remote host to dial the dashboard on, derived from the bot `host`. The
+/// dashboard is reached *from the bot itself*, so we forward to `127.0.0.1` on the
+/// remote (the dashboard binds loopback on the bot) rather than re-dialing the
+/// bot's public IP from inside the SSH session.
+fn forward_dashboard_host(_bot_host: &str) -> String {
+    "127.0.0.1".to_string()
+}
+
+/// Open `url` in the default browser via the scoped `opener` plugin (R13). The
+/// capability allowlist scopes `open_url` to loopback, so only the dashboard URL is
+/// openable. Best-effort: a failure is logged, not surfaced as a connect error.
+fn open_url_via_opener(app: &tauri::AppHandle, url: &str) {
+    use tauri_plugin_opener::OpenerExt;
+    if let Err(e) = app.opener().open_url(url.to_string(), None::<String>) {
+        eprintln!("botbox: could not open dashboard URL {url}: {e}");
+    }
+}
+
+/// (Re-)establish the dashboard tunnel for the active connection on demand (U6).
+/// Idempotent-ish: tears down any prior forward first, then probes + binds. Returns
+/// the loopback URL on success, or the wrong-port / bind error message on failure.
+///
+/// The connect flow already establishes the tunnel automatically; this command
+/// lets the frontend retry after a transient wrong-port (e.g. the dashboard came up
+/// late) without reconnecting, and is the agent-native entry point the orchestrator
+/// can drive against the real bot.
+#[tauri::command]
+pub async fn open_tunnel(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SshState>,
+) -> Result<String, String> {
+    let bot = selected_bot(&app)?;
+    let handle = state
+        .manager
+        .with_active(|conn| conn.handle())
+        .await
+        .ok_or_else(|| "no active connection".to_string())?;
+    let dashboard_host = forward_dashboard_host(&bot.host);
+
+    // Eager probe first; a wrong port is a distinct, actionable error.
+    forward::probe_dashboard_port(&handle, &dashboard_host, bot.dashboard_port)
+        .await
+        .map_err(|e| e.message)?;
+
+    // Replace any prior forward (frees its port) before binding the fresh one.
+    close_forward(&state.forward).await;
+    let fwd = forward::bind_and_forward(handle, &dashboard_host, bot.dashboard_port)
+        .await
+        .map_err(|e| e.message)?;
+    let url = fwd.local_url();
+    *state.forward.lock().await = Some(fwd);
+
+    let _ = app.emit(
+        "tunnel-status",
+        TunnelStatusPayload {
+            bot_id: bot.id,
+            active: true,
+            url: Some(url.clone()),
+            error_kind: None,
+            message: None,
+        },
+    );
+    Ok(url)
+}
+
+/// Open the dashboard's loopback URL in the default browser (R13). `url` must be the
+/// loopback URL the tunnel reported; the scoped `opener` plugin rejects anything
+/// outside `http://127.0.0.1:*` / `http://localhost:*`, so this cannot open
+/// arbitrary URLs even though it is an app command.
+#[tauri::command]
+pub async fn open_dashboard(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    // Defense in depth: even though the opener scope is loopback-only, refuse a
+    // non-loopback URL here so the app command matches the plugin scope exactly.
+    if !(url.starts_with("http://127.0.0.1:") || url.starts_with("http://localhost:")) {
+        return Err(format!("refusing to open non-loopback dashboard URL: {url}"));
+    }
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(url, None::<String>)
+        .map_err(|e| e.to_string())
 }
 
 // ── PTY terminal commands (U5 / R8, R9, R10, R11 partial-open) ──────────────

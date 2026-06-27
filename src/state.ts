@@ -62,6 +62,22 @@ export interface ConnectionError {
   stage?: ConnectStage;
 }
 
+// ── Dashboard tunnel status (U6). Sub-state of `connected`, not a new phase. ──
+
+/**
+ * The dashboard port-forward's status, surfaced in the connected view (U6 / R12,
+ * R13). `active` drives the badge; `url` is the copyable loopback URL; `error`
+ * carries the wrong-port classification ("nothing listening on port N") so the
+ * connected view can surface it without a new phase.
+ */
+export interface TunnelState {
+  active: boolean;
+  /** Loopback `http://127.0.0.1:<port>` URL when active. */
+  url?: string;
+  /** Set when the eager probe classified a wrong dashboard port (U7 renders). */
+  error?: ConnectionError;
+}
+
 // ── The five KTD9 connection phases as a discriminated union. ──
 
 export type ConnectionState =
@@ -78,6 +94,10 @@ export type ConnectionState =
       botId: string;
       /** Loopback dashboard URL once the tunnel is up (U6). */
       dashboardUrl?: string;
+      /** Dashboard tunnel status (U6). Inactive on teardown / wrong-port; the
+       *  badge derives from this. No new KTD9 phase — this is sub-state of
+       *  `connected`. */
+      tunnel?: TunnelState;
     }
   | { phase: "disconnected"; botId: string }
   | { phase: "connection-lost"; botId: string; error: ConnectionError };
@@ -113,6 +133,9 @@ export type Action =
   | { type: "host-key-prompt"; fingerprint: string }
   | { type: "connected"; botId: string }
   | { type: "set-dashboard-url"; url: string }
+  // Dashboard tunnel status (U6). `active:false` clears the URL (teardown) or
+  // carries the wrong-port error.
+  | { type: "tunnel-status"; active: boolean; url?: string; error?: ConnectionError }
   // Teardown / failure (U4/U7).
   | { type: "disconnect"; botId: string }
   | { type: "connection-lost"; botId: string; error: ConnectionError }
@@ -172,6 +195,23 @@ export function reduce(state: AppState, action: Action): AppState {
       return {
         ...state,
         connection: { ...state.connection, dashboardUrl: action.url },
+      };
+
+    case "tunnel-status":
+      // Tunnel status is sub-state of `connected`; ignore when not connected
+      // (a late teardown event after disconnect must not resurrect state).
+      if (state.connection.phase !== "connected") return state;
+      return {
+        ...state,
+        connection: {
+          ...state.connection,
+          dashboardUrl: action.active ? action.url : undefined,
+          tunnel: {
+            active: action.active,
+            url: action.active ? action.url : undefined,
+            error: action.error,
+          },
+        },
       };
 
     case "disconnect":

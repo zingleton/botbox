@@ -34,6 +34,12 @@
       <!-- Main area: terminals + status; idle placeholder until connected. -->
       <main class="workspace" id="workspace">
         <section class="status-bar" id="status-bar"></section>
+        <!--
+          Dashboard tunnel status (U6 / R12, R13): active/inactive badge, the
+          copyable loopback URL, and an explicit "Open Dashboard" button.
+          Rendered by main.ts from the connected sub-state; empty until connected.
+        -->
+        <section class="tunnel-bar" id="tunnel-region"></section>
         <section class="terminals" id="terminals">
           <div class="terminal-pane">
             <div class="terminal-pane__label">Host shell</div>

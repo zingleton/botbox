@@ -6,6 +6,7 @@
 
 pub mod channels;
 pub mod connection;
+pub mod forward;
 pub mod known_hosts;
 pub mod pipeline;
 pub mod signer;

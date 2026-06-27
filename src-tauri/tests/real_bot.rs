@@ -24,6 +24,7 @@ use std::time::Duration;
 use botbox_lib::keychain::default_key_store;
 use botbox_lib::ssh::channels::{open_attach_pty, open_host_pty, PtySink, PtySinkError, PtySize};
 use botbox_lib::ssh::connection::{connect, ConnectConfig, HostKeyPrompt, TrustResponse};
+use botbox_lib::ssh::forward::{bind_and_forward, probe_dashboard_port};
 use botbox_lib::ssh::known_hosts::{JsonKnownHostsStore, KnownHosts};
 use botbox_lib::ssh::signer::{Ed25519Signer, Signer};
 
@@ -133,5 +134,82 @@ async fn real_bot_host_shell_and_hermes_attach() {
 
     host_pty.close().await;
     attach_pty.close().await;
+    conn.close().await;
+}
+
+/// The U6 gate: authenticate to the real bot, eagerly probe the dashboard port
+/// (9119 by default) to confirm a listener, bind the loopback forward, and hit the
+/// local URL to confirm the dashboard responds through the tunnel.
+///
+/// Drives the exact U6 public API the production command layer uses:
+///   - `probe_dashboard_port(&handle, "127.0.0.1", port)` — wrong-port classifier
+///   - `bind_and_forward(handle, "127.0.0.1", port)` — loopback listener + forward
+///
+/// The dashboard binds loopback on the bot, so we forward to the bot's `127.0.0.1`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a live bot; set BOTBOX_REAL_BOT_IP"]
+async fn real_bot_dashboard_tunnel() {
+    let Ok(ip) = std::env::var("BOTBOX_REAL_BOT_IP") else {
+        eprintln!("BOTBOX_REAL_BOT_IP unset — skipping");
+        return;
+    };
+    let user = std::env::var("BOTBOX_REAL_BOT_USER").unwrap_or_else(|_| "hermes".into());
+    let dash_port: u16 = std::env::var("BOTBOX_REAL_BOT_DASH")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(9119);
+    let addr = format!("{ip}:22");
+
+    let signer: Arc<dyn Signer> = Arc::new(Ed25519Signer::new(default_key_store()));
+    let tmp = tempfile::tempdir().unwrap();
+    let decider = Arc::new(KnownHosts::new(JsonKnownHostsStore::new(tmp.path())));
+    let (prompt_tx, mut prompt_rx) = tokio::sync::mpsc::channel::<HostKeyPrompt>(4);
+    tokio::spawn(async move {
+        while let Some(p) = prompt_rx.recv().await {
+            let _ = p.responder.send(TrustResponse::Trust);
+        }
+    });
+
+    let cfg = ConnectConfig::for_user(&user);
+    let conn = connect(&addr, &cfg, signer, decider, prompt_tx)
+        .await
+        .expect("connect to real bot");
+    let handle = conn.handle();
+
+    // Eager probe: a listening dashboard port must classify as healthy.
+    probe_dashboard_port(&handle, "127.0.0.1", dash_port)
+        .await
+        .expect("dashboard port has a listener");
+
+    // A wrong port must classify as wrong-port (nothing listening), distinct from
+    // an SSH-down error — proving AE4 against the real bot.
+    let wrong = probe_dashboard_port(&handle, "127.0.0.1", dash_port.wrapping_add(1).max(1)).await;
+    assert!(
+        wrong.is_err(),
+        "a port with no listener must be classified wrong-port"
+    );
+
+    // Bind the loopback forward and fetch through the tunnel.
+    let forward = bind_and_forward(handle.clone(), "127.0.0.1", dash_port)
+        .await
+        .expect("bind loopback dashboard forward");
+    let url = forward.local_url();
+    eprintln!("─── dashboard tunnel ───\n{url}\n────────────────────────");
+    assert!(url.starts_with("http://127.0.0.1:"));
+
+    // A minimal GET over the loopback forward should reach the dashboard.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut sock = tokio::net::TcpStream::connect(("127.0.0.1", forward.local_port()))
+        .await
+        .expect("connect loopback forward");
+    sock.write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .expect("send request");
+    let mut buf = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(5), sock.read_to_end(&mut buf)).await;
+    eprintln!("dashboard returned {} bytes through the tunnel", buf.len());
+    assert!(!buf.is_empty(), "dashboard should respond through the tunnel");
+
+    forward.close();
     conn.close().await;
 }

@@ -51,6 +51,8 @@ describe("ConnectionController (U4)", () => {
         disconnect: vi.fn(),
         trustHost: vi.fn(),
         removeKnownHost: vi.fn(),
+        openTunnel: vi.fn(),
+        openDashboard: vi.fn(),
       },
       listen,
       dispatch: dispatchSpy(),
@@ -78,6 +80,8 @@ describe("ConnectionController (U4)", () => {
         disconnect: vi.fn(),
         trustHost,
         removeKnownHost: vi.fn(),
+        openTunnel: vi.fn(),
+        openDashboard: vi.fn(),
       },
       listen,
       dispatch: dispatchSpy(),
@@ -108,6 +112,8 @@ describe("ConnectionController (U4)", () => {
         disconnect: vi.fn(),
         trustHost: vi.fn(),
         removeKnownHost: vi.fn(),
+        openTunnel: vi.fn(),
+        openDashboard: vi.fn(),
       },
       listen,
       dispatch: dispatchSpy(),
@@ -145,6 +151,99 @@ describe("ConnectionController (U4)", () => {
     });
   });
 
+  it("maps a tunnel-status event to the tunnel-status action (U6)", async () => {
+    const { listen, fire } = makeListen();
+    const controller = new ConnectionController({
+      backend: {
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+        trustHost: vi.fn(),
+        removeKnownHost: vi.fn(),
+        openTunnel: vi.fn(),
+        openDashboard: vi.fn(),
+      },
+      listen,
+      dispatch: dispatchSpy(),
+      currentBotId: () => "bot-1",
+      promptTrust: () => Promise.resolve(false),
+    });
+    await controller.bind();
+    store.dispatch({ type: "connected", botId: "bot-1" });
+
+    fire("tunnel-status", {
+      botId: "bot-1",
+      active: true,
+      url: "http://127.0.0.1:7777",
+    });
+    expect(store.getState().connection).toMatchObject({
+      phase: "connected",
+      tunnel: { active: true, url: "http://127.0.0.1:7777" },
+    });
+
+    fire("tunnel-status", {
+      botId: "bot-1",
+      active: false,
+      errorKind: "wrong-dashboard-port",
+      message: "nothing listening on port 9119",
+    });
+    const conn = store.getState().connection;
+    expect(conn.phase).toBe("connected");
+    if (conn.phase === "connected") {
+      expect(conn.tunnel?.active).toBe(false);
+      expect(conn.tunnel?.error?.kind).toBe("wrong-dashboard-port");
+    }
+  });
+
+  it("openDashboard routes the loopback URL to the backend (U6 / R13)", async () => {
+    const openDashboard = vi.fn().mockResolvedValue(undefined);
+    const { listen } = makeListen();
+    const controller = new ConnectionController({
+      backend: {
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+        trustHost: vi.fn(),
+        removeKnownHost: vi.fn(),
+        openTunnel: vi.fn(),
+        openDashboard,
+      },
+      listen,
+      dispatch: dispatchSpy(),
+      currentBotId: () => "bot-1",
+      promptTrust: () => Promise.resolve(false),
+    });
+    await controller.openDashboard("http://127.0.0.1:7777");
+    expect(openDashboard).toHaveBeenCalledWith("http://127.0.0.1:7777");
+  });
+
+  it("openTunnel surfaces a wrong-port rejection as an inactive tunnel error (U6)", async () => {
+    const openTunnel = vi.fn().mockRejectedValue({
+      kind: "wrong-dashboard-port",
+      message: "nothing listening on port 9119",
+    });
+    const { listen } = makeListen();
+    const controller = new ConnectionController({
+      backend: {
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+        trustHost: vi.fn(),
+        removeKnownHost: vi.fn(),
+        openTunnel,
+        openDashboard: vi.fn(),
+      },
+      listen,
+      dispatch: dispatchSpy(),
+      currentBotId: () => "bot-1",
+      promptTrust: () => Promise.resolve(false),
+    });
+    store.dispatch({ type: "connected", botId: "bot-1" });
+    await controller.openTunnel();
+    const conn = store.getState().connection;
+    if (conn.phase === "connected") {
+      expect(conn.tunnel?.active).toBe(false);
+      expect(conn.tunnel?.error?.kind).toBe("wrong-dashboard-port");
+    }
+  });
+
   it("connect() dispatches begin-connect before invoking the backend", async () => {
     const order: string[] = [];
     const connect = vi.fn().mockImplementation(async () => {
@@ -153,7 +252,7 @@ describe("ConnectionController (U4)", () => {
     });
     const { listen } = makeListen();
     const controller = new ConnectionController({
-      backend: { connect, disconnect: vi.fn(), trustHost: vi.fn(), removeKnownHost: vi.fn() },
+      backend: { connect, disconnect: vi.fn(), trustHost: vi.fn(), removeKnownHost: vi.fn(), openTunnel: vi.fn(), openDashboard: vi.fn() },
       listen,
       dispatch: (a) => {
         if (a.type === "begin-connect") order.push("begin-connect");
@@ -175,7 +274,7 @@ describe("ConnectionController (U4)", () => {
     });
     const { listen } = makeListen();
     const controller = new ConnectionController({
-      backend: { connect, disconnect: vi.fn(), trustHost: vi.fn(), removeKnownHost: vi.fn() },
+      backend: { connect, disconnect: vi.fn(), trustHost: vi.fn(), removeKnownHost: vi.fn(), openTunnel: vi.fn(), openDashboard: vi.fn() },
       listen,
       dispatch: (a) => store.dispatch(a),
       currentBotId: () => "bot-1",

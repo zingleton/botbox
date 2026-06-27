@@ -30,8 +30,10 @@ pub mod store;
 pub fn run() {
     tauri::Builder::default()
         // `opener` is the only plugin we register; its scope is locked down in
-        // the capability file so it cannot open arbitrary URLs/paths. U6 uses
-        // it to open the loopback dashboard URL.
+        // the capability file (`opener:allow-open-url` scoped to loopback) so it
+        // can open ONLY the `http://127.0.0.1:<port>` dashboard URL and nothing
+        // else. U6 uses it (R13) both from the Rust `open_dashboard` command and
+        // directly from the webview "Open Dashboard" button.
         .plugin(tauri_plugin_opener::init())
         // U4 connection state: one active connection (validate-before-swap) +
         // the pending host-key trust prompts. App-defined commands reach it via
@@ -55,6 +57,8 @@ pub fn run() {
             commands::open_terminals,
             commands::pty_write,
             commands::pty_resize,
+            commands::open_tunnel,
+            commands::open_dashboard,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Botbox");
@@ -63,45 +67,90 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     /// Smoke test for KTD8 / R18: the capability allowlist is the
-    /// webview<->backend trust boundary. It must grant only what U1 needs and
-    /// MUST NOT grant unused plugin scopes. App-defined commands (e.g.
+    /// webview<->backend trust boundary. It must grant only what the app needs
+    /// and MUST NOT grant unused plugin scopes. App-defined commands (e.g.
     /// `app_ready`) are reachable via `core:default`; we don't enumerate them
-    /// here (Tauri gates *plugin* commands through this ACL). The control we
-    /// assert is that the `opener` plugin — registered in `run()` so U6 can
-    /// use it — has NONE of its command scopes granted yet, and that no other
-    /// later-unit plugin scope has leaked in.
+    /// here (Tauri gates *plugin* commands through this ACL).
+    ///
+    /// As of **U6** the ONE allowed plugin capability is the `opener` plugin's
+    /// `open_url`, scoped to the loopback dashboard URLs (opening
+    /// `http://127.0.0.1:<port>` is the U6 dashboard capability — R13). The test
+    /// asserts:
+    ///   - `core:default` is granted,
+    ///   - `opener:allow-open-url` IS granted AND is narrowly scoped to loopback
+    ///     (`http://127.0.0.1:*` / `http://localhost:*`) — never an unscoped
+    ///     open-url grant or a wider host,
+    ///   - no OTHER `opener:*` command scope leaked (e.g. `open_path`,
+    ///     `reveal_item_in_dir`),
+    ///   - no other later-unit plugin scope leaked.
     #[test]
-    fn capability_allowlist_excludes_unused_plugin_scopes() {
+    fn capability_allowlist_grants_only_scoped_opener_for_dashboard() {
         let caps = include_str!("../capabilities/default.json");
         let caps: serde_json::Value =
             serde_json::from_str(caps).expect("capabilities/default.json is valid JSON");
 
-        let perms: Vec<String> = caps["permissions"]
+        let entries = caps["permissions"]
             .as_array()
-            .expect("capabilities has a permissions array")
-            .iter()
-            .filter_map(|p| p.as_str().map(str::to_string))
-            .collect();
+            .expect("capabilities has a permissions array");
 
-        // U1 grants exactly the core defaults — nothing else.
+        // Permission entries are either a bare string identifier or an object
+        // `{ "identifier": "...", "allow": [...] }` (the scoped form). Collect
+        // each entry's identifier for the prefix checks.
+        let identifier = |p: &serde_json::Value| -> Option<String> {
+            p.as_str()
+                .map(str::to_string)
+                .or_else(|| p["identifier"].as_str().map(str::to_string))
+        };
+        let identifiers: Vec<String> = entries.iter().filter_map(identifier).collect();
+
+        // Core defaults are granted.
         assert!(
-            perms.iter().any(|p| p == "core:default"),
+            identifiers.iter().any(|p| p == "core:default"),
             "expected `core:default` to be granted"
         );
 
-        // The opener plugin is registered but its scopes are NOT granted in U1;
-        // opening the dashboard URL is a U6 capability. Any `opener:*` grant
-        // here is a trust-boundary regression.
-        for p in &perms {
+        // Exactly the scoped open-url opener capability is granted (U6 dashboard).
+        let opener_entries: Vec<&serde_json::Value> = entries
+            .iter()
+            .filter(|p| identifier(p).as_deref() == Some("opener:allow-open-url"))
+            .collect();
+        assert_eq!(
+            opener_entries.len(),
+            1,
+            "expected exactly one `opener:allow-open-url` grant (the U6 dashboard capability)"
+        );
+
+        // It must be the SCOPED object form (carry an `allow` list), never the bare
+        // unscoped identifier — an unscoped open-url grant would let the webview
+        // open arbitrary URLs.
+        let opener = opener_entries[0];
+        let allow = opener["allow"]
+            .as_array()
+            .expect("opener:allow-open-url must be scoped with an `allow` list (not unscoped)");
+        assert!(!allow.is_empty(), "opener scope `allow` list must not be empty");
+
+        // Every allowed URL pattern is loopback-only.
+        for entry in allow {
+            let url = entry["url"]
+                .as_str()
+                .expect("each opener scope entry is a `{ url }` object");
             assert!(
-                !p.starts_with("opener:"),
-                "capability allowlist leaked an opener scope before U6: `{p}`"
+                url.starts_with("http://127.0.0.1:") || url.starts_with("http://localhost:"),
+                "opener scope must be loopback-only, found `{url}`"
             );
         }
 
-        // No later-unit plugin scopes should be present yet (defense in depth).
+        // No OTHER opener command scope leaked (only open_url is allowed).
+        for p in &identifiers {
+            assert!(
+                p == "opener:allow-open-url" || !p.starts_with("opener:"),
+                "capability allowlist leaked a non-dashboard opener scope: `{p}`"
+            );
+        }
+
+        // No other later-unit plugin scopes should be present (defense in depth).
         for forbidden_prefix in ["shell:", "fs:", "http:", "dialog:", "process:"] {
-            for p in &perms {
+            for p in &identifiers {
                 assert!(
                     !p.starts_with(forbidden_prefix),
                     "capability allowlist leaked an unused plugin scope: `{p}`"

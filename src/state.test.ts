@@ -15,7 +15,7 @@ import {
   isIdle,
   type Bot,
 } from "./state";
-import { renderSidebar, renderStatusBar } from "./render";
+import { renderSidebar, renderStatusBar, renderTunnelBar } from "./render";
 
 const sampleBot: Bot = {
   id: "bot-1",
@@ -71,6 +71,49 @@ describe("state model (KTD9)", () => {
 
   it("ignores stage updates when not connecting", () => {
     const s = reduce(initialState(), { type: "connect-stage", stage: "authenticate" });
+    expect(s.connection.phase).toBe("idle");
+  });
+
+  it("tunnel-status sets the active badge + url when connected (U6)", () => {
+    let s = reduce(initialState(), { type: "connected", botId: "bot-1" });
+    s = reduce(s, {
+      type: "tunnel-status",
+      active: true,
+      url: "http://127.0.0.1:54321",
+    });
+    expect(s.connection.phase).toBe("connected");
+    if (s.connection.phase === "connected") {
+      expect(s.connection.tunnel?.active).toBe(true);
+      expect(s.connection.dashboardUrl).toBe("http://127.0.0.1:54321");
+      expect(s.connection.tunnel?.url).toBe("http://127.0.0.1:54321");
+    }
+  });
+
+  it("tunnel-status inactive on teardown clears the url and flips the badge (U6)", () => {
+    let s = reduce(initialState(), { type: "connected", botId: "bot-1" });
+    s = reduce(s, { type: "tunnel-status", active: true, url: "http://127.0.0.1:1" });
+    s = reduce(s, { type: "tunnel-status", active: false });
+    if (s.connection.phase === "connected") {
+      expect(s.connection.tunnel?.active).toBe(false);
+      expect(s.connection.dashboardUrl).toBeUndefined();
+    }
+  });
+
+  it("tunnel-status carries the wrong-port error inactive (AE4 surface)", () => {
+    let s = reduce(initialState(), { type: "connected", botId: "bot-1" });
+    s = reduce(s, {
+      type: "tunnel-status",
+      active: false,
+      error: { kind: "wrong-dashboard-port", message: "nothing listening on port 9119" },
+    });
+    if (s.connection.phase === "connected") {
+      expect(s.connection.tunnel?.active).toBe(false);
+      expect(s.connection.tunnel?.error?.kind).toBe("wrong-dashboard-port");
+    }
+  });
+
+  it("ignores tunnel-status when not connected", () => {
+    const s = reduce(initialState(), { type: "tunnel-status", active: true, url: "x" });
     expect(s.connection.phase).toBe("idle");
   });
 });
@@ -159,5 +202,68 @@ describe("first-run rendering (idle empty state)", () => {
     renderStatusBar(statusBar, s);
     expect(statusBar.dataset.phase).toBe("connection-lost");
     expect(statusBar.textContent).toContain("transport closed");
+  });
+});
+
+describe("dashboard tunnel bar (U6)", () => {
+  let region: HTMLElement;
+
+  beforeEach(() => {
+    document.body.innerHTML = `<div id="tunnel-region"></div>`;
+    region = document.getElementById("tunnel-region")!;
+  });
+
+  const handlers = {
+    onCopyUrl: () => {},
+    onOpenDashboard: () => {},
+    onRetry: () => {},
+  };
+
+  it("is hidden when not connected", () => {
+    renderTunnelBar(region, initialState(), handlers);
+    expect(region.dataset.tunnel).toBe("hidden");
+    expect(region.querySelector('[data-testid="tunnel-bar"]')).toBeNull();
+  });
+
+  it("shows an active badge, the copyable URL, and an Open Dashboard button", () => {
+    let s = reduce(initialState(), { type: "connected", botId: "bot-1" });
+    s = reduce(s, { type: "tunnel-status", active: true, url: "http://127.0.0.1:54321" });
+    renderTunnelBar(region, s, handlers);
+
+    expect(region.dataset.tunnel).toBe("active");
+    const badge = region.querySelector<HTMLElement>('[data-testid="tunnel-badge"]');
+    expect(badge?.dataset.active).toBe("true");
+    expect(region.querySelector('[data-testid="tunnel-url"]')?.textContent).toBe(
+      "http://127.0.0.1:54321",
+    );
+    expect(region.querySelector('[data-action="open-dashboard"]')).not.toBeNull();
+  });
+
+  it("flips the badge inactive on teardown (no url, no Open button)", () => {
+    let s = reduce(initialState(), { type: "connected", botId: "bot-1" });
+    s = reduce(s, { type: "tunnel-status", active: true, url: "http://127.0.0.1:1" });
+    s = reduce(s, { type: "tunnel-status", active: false });
+    renderTunnelBar(region, s, handlers);
+
+    expect(region.dataset.tunnel).toBe("inactive");
+    const badge = region.querySelector<HTMLElement>('[data-testid="tunnel-badge"]');
+    expect(badge?.dataset.active).toBe("false");
+    expect(region.querySelector('[data-action="open-dashboard"]')).toBeNull();
+  });
+
+  it("surfaces a wrong-port error + retry inactive (AE4)", () => {
+    let s = reduce(initialState(), { type: "connected", botId: "bot-1" });
+    s = reduce(s, {
+      type: "tunnel-status",
+      active: false,
+      error: { kind: "wrong-dashboard-port", message: "nothing listening on port 9119" },
+    });
+    renderTunnelBar(region, s, handlers);
+
+    expect(region.dataset.tunnel).toBe("inactive");
+    expect(region.querySelector('[data-testid="tunnel-error"]')?.textContent).toContain(
+      "nothing listening on port 9119",
+    );
+    expect(region.querySelector('[data-action="tunnel-retry"]')).not.toBeNull();
   });
 });

@@ -22,6 +22,7 @@ import {
   renderSidebar,
   renderStatusBar,
   renderKeyPanel,
+  renderTunnelBar,
   type KeyViewState,
 } from "./render";
 import {
@@ -75,6 +76,8 @@ const connection = new ConnectionController({
       invoke<void>("trust_host", { host, trust }),
     removeKnownHost: (host: string) =>
       invoke<void>("remove_known_host", { host }),
+    openTunnel: () => invoke<string>("open_tunnel"),
+    openDashboard: (url: string) => invoke<void>("open_dashboard", { url }),
   },
   listen: (event, handler) =>
     listen(event, (e) => handler(e.payload as never)),
@@ -222,7 +225,26 @@ function render(state: AppState): void {
     renderBotList(el("bot-list-region"), state, bots.listHandlers());
   }
   renderStatusBar(el("status-bar"), state);
+  renderTunnelBar(el("tunnel-region"), state, {
+    onCopyUrl: copyTunnelUrl,
+    onOpenDashboard: (url) => {
+      void connection.openDashboard(url);
+    },
+    onRetry: () => {
+      void connection.openTunnel();
+    },
+  });
   renderTerminals(state);
+}
+
+/** Copy the loopback dashboard URL to the clipboard (U6). A clipboard failure is
+ *  silent here; the URL stays visible to copy manually. */
+async function copyTunnelUrl(url: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(url);
+  } catch {
+    // Clipboard API can be blocked; the URL remains selectable in the bar.
+  }
 }
 
 function boot(): void {
