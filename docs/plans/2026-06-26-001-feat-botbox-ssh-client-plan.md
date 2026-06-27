@@ -1,6 +1,6 @@
 ---
 date: 2026-06-26
-status: active
+status: completed
 type: feat
 origin: docs/brainstorms/2026-06-26-botbox-ssh-client-requirements.md
 deepened: 2026-06-26
