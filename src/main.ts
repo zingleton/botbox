@@ -8,6 +8,13 @@
  *   - U4–U7 dispatch connect/teardown/error actions and drive the panes.
  */
 
+// Bundled, self-hosted fonts (CSP-safe: Vite emits them same-origin, so
+// `font-src 'self'` is satisfied — no Google CDN). Mirrors ../humanpower's
+// DM Sans / Bricolage Grotesque type pairing; JetBrains Mono for terminals.
+import "@fontsource-variable/dm-sans";
+import "@fontsource-variable/bricolage-grotesque";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/500.css";
 import "./styles.css";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";

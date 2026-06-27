@@ -20,6 +20,9 @@
     "@xterm/xterm": "5.5.0"
   },
   "devDependencies": {
+    "@fontsource-variable/bricolage-grotesque": "^5.2.10",
+    "@fontsource-variable/dm-sans": "^5.2.8",
+    "@fontsource/jetbrains-mono": "^5.2.8",
     "@tauri-apps/cli": "2.5.0",
     "jsdom": "25.0.1",
     "typescript": "5.6.3",
@@ -27,6 +30,8 @@
     "vitest": "2.1.9"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

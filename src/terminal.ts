@@ -35,11 +35,15 @@ const RESIZE_DEBOUNCE_MS = 60;
  *  installed its SIGWINCH handler (the dropped-first-SIGWINCH pitfall). */
 const FIRST_RESIZE_DELAY_MS = 120;
 
+// Forest-dark "screen" palette, matching --term-* in styles.css (the AI Power
+// Guild .dark hero range from ../humanpower): deep forest ground, spring-green
+// cursor.
 const TERMINAL_THEME = {
-  background: "#0b0e14",
-  foreground: "#c5c8c6",
-  cursor: "#7aa2f7",
-  selectionBackground: "#2d3343",
+  background: "#0a1512",
+  foreground: "#f0f8f3",
+  cursor: "#10e06a",
+  cursorAccent: "#0a1512",
+  selectionBackground: "#243b35",
 };
 
 const IDLE_PLACEHOLDER = "  Select a bot and connect to open a session.\r\n";

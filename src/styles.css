@@ -1,23 +1,61 @@
 /*
- * Botbox base styles (U1).
+ * Botbox styles — AI Power Guild design language (design cues from ../humanpower).
+ *
  * Loaded as an external stylesheet so the strict CSP (style-src 'self', no
- * unsafe-inline) is satisfied. xterm's own CSS is imported from terminal.ts.
+ * unsafe-inline) is satisfied; xterm's own CSS is imported from terminal.ts and
+ * the bundled fonts from main.ts (font-src 'self').
+ *
+ * Two surfaces, one forest-green range — mirroring humanpower's palette:
+ *  - Light "print shop" chrome: warm paper, forest-ink text, deep forest-green
+ *    CTAs. The app shell (sidebar, bars, forms) lives here.
+ *  - Forest-dark "screens": the terminal panes, echoing humanpower's .dark hero.
  */
 
 :root {
-  --bg: #0b0e14;
-  --bg-elev: #11151f;
-  --bg-sidebar: #0e121b;
-  --border: #1c2230;
-  --fg: #c5c8c6;
-  --fg-dim: #7d8590;
-  --accent: #7aa2f7;
-  --accent-dim: #3b4a6b;
-  --danger: #f7768e;
-  --ok: #9ece6a;
-  --font-ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-    monospace;
+  /* ── Light print-shop chrome (HSL triples; wrap in hsl() at use) ── */
+  --background: 45 25% 98%;
+  --foreground: 170 30% 12%;
+  --card: 0 0% 100%;
+  --sidebar: 160 20% 97%;
+  --primary: 161 85% 22%;
+  --primary-foreground: 45 25% 98%;
+  --secondary: 160 16% 93%;
+  --secondary-foreground: 170 30% 12%;
+  --muted: 160 14% 94%;
+  --muted-foreground: 170 12% 38%;
+  --accent: 148 55% 91%;
+  --accent-foreground: 170 35% 14%;
+  --success: 161 75% 28%;
+  --destructive: 0 75% 45%;
+  --border: 160 14% 87%;
+  --input: 160 14% 84%;
+  --ring: 161 85% 30%;
+  --radius: 0.25rem;
+
+  /* ── Forest-dark screen (terminal panes) ── */
+  --term-bg: 170 45% 7%;
+  --term-elev: 170 38% 10%;
+  --term-fg: 150 25% 96%;
+  --term-muted: 155 15% 70%;
+  --term-border: 168 25% 18%;
+  --term-primary: 145 95% 45%;
+
+  /* ── Type: DM Sans body, Bricolage display, JetBrains mono ── */
+  --font-sans: "DM Sans Variable", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+  --font-display: "Bricolage Grotesque Variable", var(--font-sans);
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo,
+    Consolas, monospace;
+
+  /* Convenience colour aliases (kept so component rules read cleanly). */
+  --bg: hsl(var(--background));
+  --bg-elev: hsl(var(--card));
+  --bg-sidebar: hsl(var(--sidebar));
+  --fg: hsl(var(--foreground));
+  --fg-dim: hsl(var(--muted-foreground));
+  --accent-strong: hsl(var(--primary));
+  --danger: hsl(var(--destructive));
+  --ok: hsl(var(--success));
 }
 
 * {
@@ -30,14 +68,15 @@ body {
   height: 100%;
   background: var(--bg);
   color: var(--fg);
-  font-family: var(--font-ui);
+  font-family: var(--font-sans);
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 #app.app {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: 264px 1fr;
   height: 100vh;
   overflow: hidden;
 }
@@ -46,20 +85,23 @@ body {
 
 .sidebar {
   background: var(--bg-sidebar);
-  border-right: 1px solid var(--border);
+  border-right: 1px solid hsl(var(--border));
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 
 .sidebar__header {
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--border);
+  padding: 16px;
+  border-bottom: 1px solid hsl(var(--border));
 }
 
 .brand {
-  font-weight: 600;
-  letter-spacing: 0.3px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.125rem;
+  letter-spacing: -0.01em;
+  color: hsl(var(--primary));
 }
 
 .sidebar__body {
@@ -78,13 +120,16 @@ body {
 
 .cta__title {
   margin: 4px 0 0;
-  font-size: 16px;
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
 }
 
 .cta__body {
   margin: 0;
   color: var(--fg-dim);
-  line-height: 1.45;
+  line-height: 1.5;
 }
 
 .cta__steps {
@@ -115,23 +160,24 @@ body {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 8px 10px;
-  border-radius: 6px;
+  padding: 9px 10px;
+  border-radius: var(--radius);
   cursor: pointer;
   border: 1px solid transparent;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
 }
 
 .bot-item:hover {
-  background: var(--bg-elev);
+  background: hsl(var(--accent));
 }
 
 .bot-item--selected {
-  background: var(--bg-elev);
-  border-color: var(--accent-dim);
+  background: hsl(var(--accent));
+  border-color: hsl(var(--primary) / 0.45);
 }
 
 .bot-item__name {
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .bot-item__host {
@@ -146,15 +192,17 @@ body {
   gap: 2px;
 }
 
-/* Connected: highlighted, with the Disconnect affordance. */
+/* Connected: forest-green accent + the Disconnect affordance. */
 .bot-item--connected {
-  background: var(--bg-elev);
-  border-color: var(--ok);
+  background: hsl(var(--accent));
+  border-color: hsl(var(--primary));
+  box-shadow: inset 3px 0 0 hsl(var(--primary));
 }
 
 /* Transitioning: the item being connected; the whole list is locked. */
 .bot-item--transitioning {
-  border-color: var(--accent);
+  border-color: hsl(var(--primary) / 0.5);
+  border-style: dashed;
 }
 
 .bot-list--locked {
@@ -191,7 +239,7 @@ body {
 }
 
 .sidebar__form {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid hsl(var(--border));
   padding: 12px;
 }
 
@@ -203,7 +251,9 @@ body {
 
 .bot-form__title {
   margin: 0;
-  font-size: 14px;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  letter-spacing: -0.01em;
 }
 
 .bot-form__field {
@@ -214,21 +264,29 @@ body {
 
 .bot-form__label {
   font-size: 12px;
+  font-weight: 500;
   color: var(--fg-dim);
 }
 
 .bot-form__input {
   font: inherit;
-  padding: 6px 8px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--bg);
+  height: 36px;
+  padding: 0 10px;
+  border-radius: var(--radius);
+  border: 1px solid hsl(var(--input));
+  background: hsl(var(--card));
   color: var(--fg);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.bot-form__input::placeholder {
+  color: hsl(var(--muted-foreground) / 0.7);
 }
 
 .bot-form__input:focus {
   outline: none;
-  border-color: var(--accent-dim);
+  border-color: hsl(var(--ring));
+  box-shadow: 0 0 0 2px hsl(var(--ring) / 0.35);
 }
 
 .bot-form__hint {
@@ -253,21 +311,30 @@ body {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
+  background: var(--bg);
 }
 
 .status-bar {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-elev);
+  padding: 9px 16px;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
   font-size: 13px;
-  min-height: 36px;
+  min-height: 38px;
+}
+
+.status-bar__label {
+  font-weight: 500;
 }
 
 .status-bar[data-phase="connected"] .status-bar__label {
-  color: var(--ok);
+  color: hsl(var(--success));
+}
+
+.status-bar[data-phase="connecting"] .status-bar__label {
+  color: hsl(var(--primary));
 }
 
 .status-bar[data-phase="connection-lost"] .status-bar__label {
@@ -283,11 +350,11 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-elev);
+  padding: 9px 16px;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--secondary));
   font-size: 13px;
-  min-height: 36px;
+  min-height: 38px;
 }
 
 .tunnel-bar[data-tunnel="hidden"] {
@@ -298,21 +365,22 @@ body {
   color: var(--fg-dim);
   text-transform: uppercase;
   font-size: 11px;
-  letter-spacing: 0.6px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
 }
 
 .tunnel-bar__badge {
   font-size: 11px;
   font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid hsl(var(--border));
 }
 
 .tunnel-bar__badge--active {
-  color: var(--bg);
-  background: var(--ok);
-  border-color: var(--ok);
+  color: hsl(var(--primary-foreground));
+  background: hsl(var(--primary));
+  border-color: hsl(var(--primary));
 }
 
 .tunnel-bar__badge--inactive {
@@ -323,7 +391,7 @@ body {
 .tunnel-bar__url {
   font-family: var(--font-mono);
   font-size: 12px;
-  color: var(--accent);
+  color: hsl(var(--primary));
   user-select: all;
 }
 
@@ -337,77 +405,119 @@ body {
   color: var(--danger);
 }
 
+/* ── Terminals: forest-dark "screens" ── */
+
 .terminals {
   flex: 1;
   display: grid;
   grid-template-rows: 1fr 1fr;
   gap: 1px;
-  background: var(--border);
+  background: hsl(var(--term-border));
   min-height: 0;
 }
 
 .terminal-pane {
   display: flex;
   flex-direction: column;
-  background: var(--bg);
+  background: hsl(var(--term-bg));
   min-height: 0;
 }
 
 .terminal-pane__label {
   padding: 6px 12px;
   font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
-  color: var(--fg-dim);
-  border-bottom: 1px solid var(--border);
+  letter-spacing: 0.06em;
+  color: hsl(var(--term-muted));
+  background: hsl(var(--term-elev));
+  border-bottom: 1px solid hsl(var(--term-border));
 }
 
 .terminal-host {
   flex: 1;
   min-height: 0;
   padding: 6px 8px;
+  background: hsl(var(--term-bg));
 }
 
 /* ── Buttons ── */
 
 .btn {
   font: inherit;
-  padding: 6px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--bg-elev);
+  font-weight: 500;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: var(--radius);
+  border: 1px solid hsl(var(--input));
+  background: hsl(var(--card));
   color: var(--fg);
   cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease,
+    box-shadow 0.12s ease, transform 0.06s ease;
 }
 
 .btn:hover:not(:disabled) {
-  border-color: var(--accent-dim);
+  background: hsl(var(--secondary));
+  border-color: hsl(var(--primary) / 0.4);
 }
 
+.btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px hsl(var(--ring) / 0.4);
+}
+
+/* Primary: deep forest green with the signature soft glow + press. */
 .btn--primary {
-  background: var(--accent);
-  color: #0b0e14;
-  border-color: var(--accent);
+  font-weight: 600;
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  border-color: hsl(var(--primary));
+  box-shadow: 0 1px 0 hsl(var(--primary) / 0.35),
+    0 2px 8px hsl(var(--primary) / 0.25);
+}
+
+.btn--primary:hover:not(:disabled) {
+  background: hsl(var(--primary) / 0.92);
+  border-color: hsl(var(--primary));
+  box-shadow: 0 2px 12px hsl(var(--primary) / 0.4);
+}
+
+.btn--primary:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: none;
 }
 
 .btn--danger {
   color: var(--danger);
-  border-color: var(--accent-dim);
+  border-color: hsl(var(--destructive) / 0.4);
+  background: hsl(var(--card));
 }
 
 .btn--danger:hover:not(:disabled) {
+  background: hsl(var(--destructive) / 0.08);
   border-color: var(--danger);
 }
 
 .btn:disabled {
-  opacity: 0.55;
+  opacity: 0.5;
   cursor: not-allowed;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn,
+  .bot-item {
+    transition: none;
+  }
+  .btn--primary:active:not(:disabled) {
+    transform: none;
+  }
 }
 
 /* ── SSH key surface (U2 / R2) ── */
 
 .sidebar__key {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid hsl(var(--border));
   padding: 12px;
   display: flex;
   flex-direction: column;
@@ -416,8 +526,9 @@ body {
 
 .key-panel__title {
   font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
+  letter-spacing: 0.06em;
   color: var(--fg-dim);
 }
 
@@ -425,6 +536,7 @@ body {
   margin: 0;
   color: var(--fg-dim);
   font-size: 13px;
+  line-height: 1.45;
 }
 
 .key-panel__value {
@@ -433,9 +545,9 @@ body {
   font-size: 11px;
   line-height: 1.4;
   color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  background: hsl(var(--muted));
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--radius);
   padding: 8px;
   max-height: 72px;
   overflow: auto;
@@ -451,7 +563,7 @@ body {
 
 .key-panel__notice {
   font-size: 12px;
-  color: var(--ok);
+  color: hsl(var(--success));
 }
 
 .key-panel__notice--error {
