@@ -113,6 +113,9 @@ export interface ConnectionDeps {
   /** Surface the host-key trust prompt to the operator; resolves Trust/Reject.
    *  U7 owns the real modal; a default `window.confirm` keeps it functional. */
   promptTrust: (fingerprint: string, host: string) => Promise<boolean>;
+  /** Fired when the connection reaches `connected` (the single-panel re-layout
+   *  uses this to auto-switch the content view to the Hermes terminal). */
+  onConnected?: (botId: string) => void;
 }
 
 /**
@@ -149,6 +152,7 @@ export class ConnectionController {
     this.unlisteners.push(
       await this.deps.listen<ConnectedEvent>("connected", (p) => {
         d({ type: "connected", botId: p.botId });
+        this.deps.onConnected?.(p.botId);
       }),
     );
 

@@ -28,12 +28,15 @@ import {
 import {
   renderSidebar,
   renderStatusBar,
+  renderNav,
+  renderSelectedBotLine,
   renderKeyPanel,
-  renderTunnelBar,
+  applyContentView,
   renderErrorSurface,
   showTrustModal,
   type KeyViewState,
   type ErrorContext,
+  type ContentRegions,
 } from "./render";
 import {
   BotsController,
@@ -100,6 +103,10 @@ const connection = new ConnectionController({
   // controller then routes it to the backend `trust_host` command.
   promptTrust: (fingerprint, host) =>
     showTrustModal(el("modal-region"), { host, fingerprint }),
+  // Single-panel re-layout: on connect, auto-switch the content view to the
+  // Hermes terminal (the primary agent session). A partial open (host live,
+  // attach failed) re-routes to the Linux shell from the terminal controller.
+  onConnected: () => store.dispatch({ type: "set-view", view: "hermes" }),
 });
 
 // Terminals are created once and re-used across state changes.
@@ -221,22 +228,35 @@ function renderForm(form: BotFormState | null): void {
 }
 
 function render(state: AppState): void {
+  // Top bar: the single phase-aware connect affordance + Select a Bot / Settings,
+  // and a compact connection-phase status (errors live in #error-region).
+  renderNav(el("nav-region"), state, {
+    onConnect: (botId) => void connection.connect(botId),
+    onDisconnect: (botId) => void connection.disconnect(botId),
+    onReconnect: () => void retryConnect(),
+    onSetView: (view) => store.dispatch({ type: "set-view", view }),
+  });
+  renderStatusBar(el("status-region"), state);
+
+  // Selected-bot line: <name> + Hermes / Dashboard / Linux context links.
+  renderSelectedBotLine(el("selected-bot-region"), state, {
+    onSetView: (view) => store.dispatch({ type: "set-view", view }),
+    onOpenDashboard: openSelectedDashboard,
+  });
+
+  // Select-a-Bot panel content: first-run CTA or the bot list (the add/edit form
+  // renders into #bot-form-region via the controller; the key panel into
+  // #key-region via renderKey).
   if (isFirstRun(state)) {
-    // Empty inventory: the first-run CTA (render.ts). U3 wires its "Add a bot"
-    // button to the controller's add flow (U1 shipped it disabled).
     renderSidebar(el("bot-list-region"), state, {
       onSelectBot: (botId) => store.dispatch({ type: "select-bot", botId }),
       onGenerateKey: generateKey,
       onAddBot: () => bots.openAdd(),
     });
   } else {
-    // Populated inventory: the bot list with KTD9-derived item states (U3),
-    // wired to the controller for select/add/edit/remove/disconnect.
     renderBotList(el("bot-list-region"), state, bots.listHandlers());
   }
-  renderStatusBar(el("status-bar"), state, {
-    onConnect: (botId) => void connection.connect(botId),
-  });
+
   renderErrorSurface(el("error-region"), state, errorContext(state), {
     onRetry: () => void retryConnect(),
     onRemoveSavedKey: (host) => void removeSavedKeyAndClear(host),
@@ -244,16 +264,38 @@ function render(state: AppState): void {
     onReconnect: () => void retryConnect(),
     onDismiss: () => store.dispatch({ type: "clear-error" }),
   });
-  renderTunnelBar(el("tunnel-region"), state, {
-    onCopyUrl: copyTunnelUrl,
-    onOpenDashboard: (url) => {
-      void connection.openDashboard(url);
-    },
-    onRetry: () => {
-      void connection.openTunnel();
-    },
-  });
+
+  // Route the single content area: show one surface (dialog panel or a terminal)
+  // and fit the now-visible pane (the terminals are hidden, never destroyed).
+  applyContentView(contentRegions(), state.view);
+  if (panes) {
+    panes.host.setVisible(state.view === "linux");
+    panes.attach.setVisible(state.view === "hermes");
+  }
+
   renderTerminals(state);
+}
+
+/** The DOM regions the content router toggles between. */
+function contentRegions(): ContentRegions {
+  return {
+    panel: el("content-panel"),
+    host: el("terminal-host"),
+    attach: el("terminal-attach"),
+    list: el("bot-list-region"),
+    form: el("bot-form-region"),
+    key: el("key-region"),
+  };
+}
+
+/** Open the live connection's loopback dashboard in the default browser (the
+ *  Dashboard context link). No-op unless connected with an active tunnel — the
+ *  link is disabled in the UI otherwise. */
+function openSelectedDashboard(): void {
+  const c = store.getState().connection;
+  if (c.phase === "connected" && c.tunnel?.url) {
+    void connection.openDashboard(c.tunnel.url);
+  }
 }
 
 /**
@@ -312,16 +354,6 @@ async function removeSavedKeyAndClear(host: string): Promise<void> {
   }
 }
 
-/** Copy the loopback dashboard URL to the clipboard (U6). A clipboard failure is
- *  silent here; the URL stays visible to copy manually. */
-async function copyTunnelUrl(url: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(url);
-  } catch {
-    // Clipboard API can be blocked; the URL remains selectable in the bar.
-  }
-}
-
 function boot(): void {
   panes = createTerminals({
     host: el("terminal-host"),
@@ -347,6 +379,8 @@ function boot(): void {
     },
     channelFactory: () => new Channel<ArrayBuffer>() as unknown as RawChannel,
     panes,
+    // Partial open (host live, Hermes attach failed): route to the Linux shell.
+    onPartialOpen: () => store.dispatch({ type: "set-view", view: "linux" }),
   });
 
   store.subscribe(render);

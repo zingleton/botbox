@@ -12,8 +12,10 @@
 
 import {
   isFirstRun,
+  hasSelectedBot,
   type AppState,
   type Bot,
+  type ContentView,
   type ConnectionError,
   type ConnectionErrorKind,
 } from "./state";
@@ -220,6 +222,201 @@ export function renderBotItem(
   return li;
 }
 
+// ── Top-bar nav + selected-bot line (single-panel re-layout) ────────────────
+
+export interface NavHandlers {
+  onConnect: (botId: string) => void;
+  onDisconnect: (botId: string) => void;
+  onReconnect: () => void;
+  onSetView: (view: ContentView) => void;
+}
+
+function navButton(
+  label: string,
+  action: string,
+  onClick: (() => void) | null,
+  opts: { active?: boolean; primary?: boolean } = {},
+): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.className =
+    "nav-btn" +
+    (opts.primary ? " nav-btn--primary" : "") +
+    (opts.active ? " nav-btn--active" : "");
+  b.textContent = label;
+  b.setAttribute("data-action", action);
+  b.disabled = onClick === null;
+  if (onClick) b.addEventListener("click", onClick);
+  return b;
+}
+
+/**
+ * The top-bar nav: a phase-aware connect control plus Select a Bot / Settings.
+ * The connect control is the single connect affordance and reflects every
+ * connection phase (Connect / Connecting… / Disconnect / Reconnect).
+ */
+export function renderNav(
+  region: HTMLElement,
+  state: AppState,
+  handlers: NavHandlers,
+): void {
+  region.replaceChildren();
+  region.appendChild(renderConnectControl(state, handlers));
+  region.appendChild(
+    navButton("Select a Bot", "nav-bots", () => handlers.onSetView("bots"), {
+      active: state.view === "bots",
+    }),
+  );
+  region.appendChild(
+    navButton("Settings", "nav-settings", () => handlers.onSetView("settings"), {
+      active: state.view === "settings",
+    }),
+  );
+}
+
+/** The phase-aware connect/disconnect/reconnect control (see Connect KTD). */
+function renderConnectControl(
+  state: AppState,
+  handlers: NavHandlers,
+): HTMLButtonElement {
+  switch (state.connection.phase) {
+    case "connecting":
+      return navButton("Connecting…", "nav-connect", null);
+    case "connected": {
+      const botId = state.connection.botId;
+      return navButton("Disconnect", "nav-disconnect", () =>
+        handlers.onDisconnect(botId),
+      );
+    }
+    case "connection-lost":
+      return navButton("Reconnect", "nav-connect", () => handlers.onReconnect(), {
+        primary: true,
+      });
+    case "idle":
+    case "disconnected": {
+      const botId = state.selectedBotId;
+      return navButton(
+        "Connect",
+        "nav-connect",
+        botId ? () => handlers.onConnect(botId) : null,
+        { primary: !!botId },
+      );
+    }
+  }
+}
+
+export interface SelectedBotHandlers {
+  onSetView: (view: ContentView) => void;
+  onOpenDashboard: () => void;
+}
+
+/**
+ * The selected-bot line: <bot name> + Hermes / Dashboard / Linux context links.
+ * Empty (CSS `:empty` hides it) until a bot is selected; visible in every phase
+ * once selected. Hermes/Linux switch the content view and are navigable even
+ * pre-connect (the terminal shows its idle placeholder); the active view's link
+ * carries `link-btn--active`. Dashboard opens the external browser and is enabled
+ * only when the tunnel is active, and never carries the active style.
+ */
+export function renderSelectedBotLine(
+  region: HTMLElement,
+  state: AppState,
+  handlers: SelectedBotHandlers,
+): void {
+  region.replaceChildren();
+  if (!hasSelectedBot(state)) return;
+  const bot = state.bots.find((b) => b.id === state.selectedBotId);
+  if (!bot) return;
+
+  const name = document.createElement("span");
+  name.className = "selected-bot__name";
+  name.setAttribute("data-testid", "selected-bot-name");
+  name.textContent = bot.name;
+
+  const links = document.createElement("div");
+  links.className = "selected-bot__links";
+  links.append(
+    linkButton("Hermes", "link-hermes", () => handlers.onSetView("hermes"), {
+      active: state.view === "hermes",
+    }),
+    linkButton(
+      "Dashboard",
+      "link-dashboard",
+      dashboardEnabled(state) ? () => handlers.onOpenDashboard() : null,
+    ),
+    linkButton("Linux", "link-linux", () => handlers.onSetView("linux"), {
+      active: state.view === "linux",
+    }),
+  );
+
+  region.append(name, links);
+}
+
+/** The Dashboard link only works once the loopback tunnel is live. */
+function dashboardEnabled(state: AppState): boolean {
+  return (
+    state.connection.phase === "connected" &&
+    state.connection.tunnel?.active === true
+  );
+}
+
+function linkButton(
+  label: string,
+  action: string,
+  onClick: (() => void) | null,
+  opts: { active?: boolean } = {},
+): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.className = "link-btn" + (opts.active ? " link-btn--active" : "");
+  b.textContent = label;
+  b.setAttribute("data-action", action);
+  b.disabled = onClick === null;
+  if (onClick) b.addEventListener("click", onClick);
+  return b;
+}
+
+// ── Content-area router (single-panel re-layout) ────────────────────────────
+
+/** The DOM regions the content router toggles between. */
+export interface ContentRegions {
+  /** The dialog panel wrapper (bot list/form + Settings key panel). */
+  panel: HTMLElement;
+  /** Host-shell ("Linux") terminal container. */
+  host: HTMLElement;
+  /** Hermes-attach terminal container. */
+  attach: HTMLElement;
+  /** Bot-list region (inside the panel). */
+  list: HTMLElement;
+  /** Add/edit form region (inside the panel). */
+  form: HTMLElement;
+  /** Public-key region (inside the panel). */
+  key: HTMLElement;
+}
+
+function setHidden(el: HTMLElement, hidden: boolean): void {
+  el.classList.toggle("hidden", hidden);
+}
+
+/**
+ * Show exactly one content surface for the active view. The dialog panel (with
+ * its bot-list/form vs key sub-regions) shows for `bots`/`settings`; otherwise
+ * the matching persistent terminal shows. Terminals are only hidden, never
+ * destroyed, so their scrollback + live PTY survive (the caller fits the
+ * now-visible pane — see U5). Pure DOM; no store coupling.
+ */
+export function applyContentView(
+  regions: ContentRegions,
+  view: ContentView,
+): void {
+  const showPanel = view === "bots" || view === "settings";
+  setHidden(regions.panel, !showPanel);
+  setHidden(regions.host, view !== "linux");
+  setHidden(regions.attach, view !== "hermes");
+  // Within the panel: bot list + form for `bots`, the key panel for `settings`.
+  setHidden(regions.list, view !== "bots");
+  setHidden(regions.form, view !== "bots");
+  setHidden(regions.key, view !== "settings");
+}
+
 // ── Dashboard tunnel bar (U6 / R12, R13) ────────────────────────────────────
 
 export interface TunnelBarHandlers {
@@ -307,73 +504,33 @@ export function renderTunnelBar(
   }
 }
 
-/** Handlers for the status bar's primary connect affordance. */
-export interface StatusBarHandlers {
-  /** Start a connect to the given (currently-selected) bot. */
-  onConnect: (botId: string) => void;
-}
+/**
+ * Compact connection-phase status text for the top bar (`#status-region`). Phase
+ * only — error display is owned solely by `renderErrorSurface` (`#error-region`),
+ * so no `lastError` is rendered here. The connect affordance lives in `renderNav`.
+ */
+export function renderStatusBar(region: HTMLElement, state: AppState): void {
+  region.dataset.phase = state.connection.phase;
 
-export function renderStatusBar(
-  bar: HTMLElement,
-  state: AppState,
-  handlers?: StatusBarHandlers,
-): void {
-  bar.replaceChildren();
-  bar.dataset.phase = state.connection.phase;
-
-  const label = document.createElement("span");
-  label.className = "status-bar__label";
-
+  let text = "";
   switch (state.connection.phase) {
     case "idle":
-      label.textContent = state.selectedBotId
-        ? "Ready to connect."
-        : "Select a bot and connect.";
+      text = hasSelectedBot(state) ? "Not connected" : "";
       break;
     case "connecting":
-      label.textContent = `Connecting… (${state.connection.stage})`;
+      text = `Connecting… (${state.connection.stage})`;
       break;
     case "connected":
-      label.textContent = "Connected.";
+      text = "Connected";
       break;
     case "disconnected":
-      label.textContent = "Disconnected.";
+      text = "Disconnected";
       break;
     case "connection-lost":
-      label.textContent = `Connection lost: ${state.connection.error.message}`;
+      text = `Connection lost: ${state.connection.error.message}`;
       break;
   }
-  bar.appendChild(label);
-
-  // Primary connect affordance. A selected bot in the idle/disconnected phase is
-  // the only state from which the user starts (or restarts) a connection — the
-  // `connecting` phase shows progress and the `connected` phase exposes
-  // Disconnect on the bot item. Without this button there is no way to initiate
-  // the first connect from the UI.
-  if (
-    handlers &&
-    state.selectedBotId &&
-    (state.connection.phase === "idle" ||
-      state.connection.phase === "disconnected")
-  ) {
-    const botId = state.selectedBotId;
-    const connect = button(
-      "Connect",
-      "status-connect",
-      () => handlers.onConnect(botId),
-      { primary: true },
-    );
-    connect.classList.add("status-bar__connect");
-    bar.appendChild(connect);
-  }
-
-  if (state.lastError) {
-    const err = document.createElement("span");
-    err.className = "status-bar__error";
-    err.setAttribute("data-testid", "last-error");
-    err.textContent = state.lastError.message;
-    bar.appendChild(err);
-  }
+  region.textContent = text;
 }
 
 // ── Error-class surfaces (U7 / R11, R2, R16) ────────────────────────────────

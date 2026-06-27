@@ -16,7 +16,15 @@ import {
   hasSelectedBot,
   type Bot,
 } from "./state";
-import { renderSidebar, renderStatusBar, renderTunnelBar } from "./render";
+import {
+  renderSidebar,
+  renderStatusBar,
+  renderTunnelBar,
+  renderNav,
+  renderSelectedBotLine,
+  applyContentView,
+  type ContentRegions,
+} from "./render";
 
 const sampleBot: Bot = {
   id: "bot-1",
@@ -222,10 +230,12 @@ describe("first-run rendering (idle empty state)", () => {
     expect(items[0].querySelector(".bot-item__name")?.textContent).toBe("Hermes-A");
   });
 
-  it("status bar shows the idle 'select a bot' prompt when idle with no selection", () => {
+  it("status bar shows phase text only (no error, no connect button)", () => {
     renderStatusBar(statusBar, initialState());
     expect(statusBar.dataset.phase).toBe("idle");
-    expect(statusBar.textContent).toContain("Select a bot and connect");
+    // Idle with no selection: empty (the Connect cue lives in the nav).
+    expect(statusBar.textContent).toBe("");
+    expect(statusBar.querySelector("button")).toBeNull();
   });
 
   it("status bar reflects the connection-lost phase with the error message", () => {
@@ -240,36 +250,242 @@ describe("first-run rendering (idle empty state)", () => {
     expect(statusBar.textContent).toContain("transport closed");
   });
 
-  it("offers a Connect button when a bot is selected and idle, wired to onConnect", () => {
+  it("status bar renders no error span even when lastError is set", () => {
     let s = reduce(initialState(), { type: "set-bots", bots: [sampleBot] });
-    s = reduce(s, { type: "select-bot", botId: sampleBot.id });
+    s = reduce(s, {
+      type: "connect-failed",
+      error: { kind: "remote-auth-failure", message: "key rejected" },
+    });
+    renderStatusBar(statusBar, s);
+    expect(statusBar.querySelector('[data-testid="last-error"]')).toBeNull();
+    expect(statusBar.textContent).not.toContain("key rejected");
+  });
+});
 
+describe("top-bar nav (U3)", () => {
+  let nav: HTMLElement;
+
+  const navHandlers = (over: Partial<Parameters<typeof renderNav>[2]> = {}) => ({
+    onConnect: () => {},
+    onDisconnect: () => {},
+    onReconnect: () => {},
+    onSetView: () => {},
+    ...over,
+  });
+
+  const withBot = () => {
+    let s = reduce(initialState(), { type: "set-bots", bots: [sampleBot] });
+    return reduce(s, { type: "select-bot", botId: sampleBot.id });
+  };
+
+  beforeEach(() => {
+    document.body.innerHTML = `<div id="nav-region"></div>`;
+    nav = document.getElementById("nav-region")!;
+  });
+
+  it("renders Connect (enabled, wired) + Select a Bot + Settings when idle with a bot", () => {
     let connectedId: string | null = null;
-    renderStatusBar(statusBar, s, { onConnect: (id) => (connectedId = id) });
+    renderNav(nav, withBot(), navHandlers({ onConnect: (id) => (connectedId = id) }));
 
-    const btn = statusBar.querySelector<HTMLButtonElement>(
-      '[data-action="status-connect"]',
-    );
-    expect(btn).not.toBeNull();
-    btn!.click();
+    const connect = nav.querySelector<HTMLButtonElement>('[data-action="nav-connect"]')!;
+    expect(connect.textContent).toBe("Connect");
+    expect(connect.disabled).toBe(false);
+    connect.click();
     expect(connectedId).toBe(sampleBot.id);
+
+    expect(nav.querySelector('[data-action="nav-bots"]')).not.toBeNull();
+    expect(nav.querySelector('[data-action="nav-settings"]')).not.toBeNull();
   });
 
-  it("offers no Connect button when no bot is selected", () => {
-    renderStatusBar(statusBar, initialState(), { onConnect: () => {} });
+  it("disables Connect when no bot is selected", () => {
+    renderNav(nav, initialState(), navHandlers());
+    const connect = nav.querySelector<HTMLButtonElement>('[data-action="nav-connect"]')!;
+    expect(connect.disabled).toBe(true);
+  });
+
+  it("shows a disabled 'Connecting…' control while connecting", () => {
+    const s = reduce(withBot(), { type: "begin-connect", botId: sampleBot.id });
+    renderNav(nav, s, navHandlers());
+    const connect = nav.querySelector<HTMLButtonElement>('[data-action="nav-connect"]')!;
+    expect(connect.textContent).toBe("Connecting…");
+    expect(connect.disabled).toBe(true);
+  });
+
+  it("shows Disconnect when connected, wired to onDisconnect", () => {
+    const s = reduce(withBot(), { type: "connected", botId: sampleBot.id });
+    let disconnectedId: string | null = null;
+    renderNav(nav, s, navHandlers({ onDisconnect: (id) => (disconnectedId = id) }));
+    const btn = nav.querySelector<HTMLButtonElement>('[data-action="nav-disconnect"]')!;
+    expect(btn.textContent).toBe("Disconnect");
+    btn.click();
+    expect(disconnectedId).toBe(sampleBot.id);
+  });
+
+  it("shows Reconnect when connection-lost, wired to onReconnect", () => {
+    const s = reduce(withBot(), {
+      type: "connection-lost",
+      botId: sampleBot.id,
+      error: { kind: "connection-lost", message: "dropped" },
+    });
+    let reconnected = false;
+    renderNav(nav, s, navHandlers({ onReconnect: () => (reconnected = true) }));
+    const btn = nav.querySelector<HTMLButtonElement>('[data-action="nav-connect"]')!;
+    expect(btn.textContent).toBe("Reconnect");
+    btn.click();
+    expect(reconnected).toBe(true);
+  });
+
+  it("marks the nav control matching the active view", () => {
+    const s = reduce(withBot(), { type: "set-view", view: "settings" });
+    renderNav(nav, s, navHandlers());
     expect(
-      statusBar.querySelector('[data-action="status-connect"]'),
-    ).toBeNull();
+      nav.querySelector('[data-action="nav-settings"]')?.classList.contains("nav-btn--active"),
+    ).toBe(true);
+    expect(
+      nav.querySelector('[data-action="nav-bots"]')?.classList.contains("nav-btn--active"),
+    ).toBe(false);
+  });
+});
+
+describe("selected-bot line (U3)", () => {
+  let region: HTMLElement;
+
+  const handlers = (over: Partial<Parameters<typeof renderSelectedBotLine>[2]> = {}) => ({
+    onSetView: () => {},
+    onOpenDashboard: () => {},
+    ...over,
   });
 
-  it("offers no Connect button while connecting", () => {
+  const selected = () => {
     let s = reduce(initialState(), { type: "set-bots", bots: [sampleBot] });
-    s = reduce(s, { type: "select-bot", botId: sampleBot.id });
-    s = reduce(s, { type: "begin-connect", botId: sampleBot.id });
-    renderStatusBar(statusBar, s, { onConnect: () => {} });
+    return reduce(s, { type: "select-bot", botId: sampleBot.id });
+  };
+
+  beforeEach(() => {
+    document.body.innerHTML = `<div id="selected-bot-region"></div>`;
+    region = document.getElementById("selected-bot-region")!;
+  });
+
+  it("renders nothing when no bot is selected", () => {
+    renderSelectedBotLine(region, initialState(), handlers());
+    expect(region.childElementCount).toBe(0);
+  });
+
+  it("shows the bot name and Hermes/Dashboard/Linux links when selected", () => {
+    renderSelectedBotLine(region, selected(), handlers());
+    expect(region.querySelector('[data-testid="selected-bot-name"]')?.textContent).toBe(
+      "Hermes-A",
+    );
+    expect(region.querySelector('[data-action="link-hermes"]')).not.toBeNull();
+    expect(region.querySelector('[data-action="link-dashboard"]')).not.toBeNull();
+    expect(region.querySelector('[data-action="link-linux"]')).not.toBeNull();
+  });
+
+  it("Hermes/Linux links switch the view and are navigable pre-connect", () => {
+    let view: string | null = null;
+    renderSelectedBotLine(region, selected(), handlers({ onSetView: (v) => (view = v) }));
+    const hermes = region.querySelector<HTMLButtonElement>('[data-action="link-hermes"]')!;
+    const linux = region.querySelector<HTMLButtonElement>('[data-action="link-linux"]')!;
+    expect(hermes.disabled).toBe(false);
+    expect(linux.disabled).toBe(false);
+    hermes.click();
+    expect(view).toBe("hermes");
+    linux.click();
+    expect(view).toBe("linux");
+  });
+
+  it("the link matching the active view carries the active class; Dashboard never does", () => {
+    const s = reduce(selected(), { type: "set-view", view: "linux" });
+    renderSelectedBotLine(region, s, handlers());
     expect(
-      statusBar.querySelector('[data-action="status-connect"]'),
-    ).toBeNull();
+      region.querySelector('[data-action="link-linux"]')?.classList.contains("link-btn--active"),
+    ).toBe(true);
+    expect(
+      region.querySelector('[data-action="link-dashboard"]')?.classList.contains("link-btn--active"),
+    ).toBe(false);
+  });
+
+  it("Dashboard is disabled until the tunnel is active, then opens it", () => {
+    // Not connected: disabled.
+    renderSelectedBotLine(region, selected(), handlers());
+    expect(
+      region.querySelector<HTMLButtonElement>('[data-action="link-dashboard"]')!.disabled,
+    ).toBe(true);
+
+    // Connected with an active tunnel: enabled + wired.
+    let opened = false;
+    let s = reduce(selected(), { type: "connected", botId: sampleBot.id });
+    s = reduce(s, { type: "tunnel-status", active: true, url: "http://127.0.0.1:1" });
+    renderSelectedBotLine(region, s, handlers({ onOpenDashboard: () => (opened = true) }));
+    const dash = region.querySelector<HTMLButtonElement>('[data-action="link-dashboard"]')!;
+    expect(dash.disabled).toBe(false);
+    dash.click();
+    expect(opened).toBe(true);
+  });
+});
+
+describe("content-area router (U4)", () => {
+  let regions: ContentRegions;
+
+  beforeEach(() => {
+    document.body.innerHTML = `
+      <div id="content-panel"></div>
+      <div id="terminal-host"></div>
+      <div id="terminal-attach"></div>
+      <div id="bot-list-region"></div>
+      <div id="bot-form-region"></div>
+      <div id="key-region"></div>`;
+    const g = (id: string) => document.getElementById(id)!;
+    regions = {
+      panel: g("content-panel"),
+      host: g("terminal-host"),
+      attach: g("terminal-attach"),
+      list: g("bot-list-region"),
+      form: g("bot-form-region"),
+      key: g("key-region"),
+    };
+  });
+
+  const hidden = (el: HTMLElement) => el.classList.contains("hidden");
+
+  it("bots view: panel + list/form shown; key + both terminals hidden", () => {
+    applyContentView(regions, "bots");
+    expect(hidden(regions.panel)).toBe(false);
+    expect(hidden(regions.list)).toBe(false);
+    expect(hidden(regions.form)).toBe(false);
+    expect(hidden(regions.key)).toBe(true);
+    expect(hidden(regions.host)).toBe(true);
+    expect(hidden(regions.attach)).toBe(true);
+  });
+
+  it("settings view: panel + key shown; list/form + terminals hidden", () => {
+    applyContentView(regions, "settings");
+    expect(hidden(regions.panel)).toBe(false);
+    expect(hidden(regions.key)).toBe(false);
+    expect(hidden(regions.list)).toBe(true);
+    expect(hidden(regions.host)).toBe(true);
+    expect(hidden(regions.attach)).toBe(true);
+  });
+
+  it("linux view: host terminal shown; panel + attach hidden", () => {
+    applyContentView(regions, "linux");
+    expect(hidden(regions.host)).toBe(false);
+    expect(hidden(regions.attach)).toBe(true);
+    expect(hidden(regions.panel)).toBe(true);
+  });
+
+  it("hermes view: attach terminal shown; panel + host hidden", () => {
+    applyContentView(regions, "hermes");
+    expect(hidden(regions.attach)).toBe(false);
+    expect(hidden(regions.host)).toBe(true);
+    expect(hidden(regions.panel)).toBe(true);
+  });
+
+  it("switching linux -> hermes toggles cleanly", () => {
+    applyContentView(regions, "linux");
+    applyContentView(regions, "hermes");
+    expect(hidden(regions.host)).toBe(true);
+    expect(hidden(regions.attach)).toBe(false);
   });
 });
 

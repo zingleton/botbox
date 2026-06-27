@@ -11,54 +11,59 @@
     -->
   </head>
   <body>
+    <!--
+      Single-panel top-nav shell. One content surface is shown at a time:
+      a top bar (brand + nav + connection status), a selected-bot line with the
+      Hermes/Dashboard/Linux context links, an error region, and a content area
+      that hosts either a dialog panel (#content-panel) or one of the two
+      persistent terminals. main.ts renders into each region from state.
+    -->
     <div id="app" class="app">
-      <!-- Left rail: bot inventory (U3 fills the dynamic list). -->
-      <aside class="sidebar" id="sidebar">
-        <header class="sidebar__header">
-          <span class="brand">Botbox</span>
-        </header>
-        <div class="sidebar__body" id="bot-list-region">
-          <!-- Bot list / first-run CTA rendered by main.ts from state. -->
-        </div>
-        <!-- Add/edit bot form (U3); empty until the controller opens it. -->
-        <div class="sidebar__form" id="bot-form-region"></div>
-        <!--
-          Always-available SSH public-key surface (U2 / R2): view + one-click
-          copy the public key, and an explicit (confirmed) export of the
-          private key. Rendered by main.ts from the key state, independent of
-          connection phase.
-        -->
-        <div class="sidebar__key" id="key-region"></div>
-      </aside>
+      <header class="topbar">
+        <span class="brand">Botbox</span>
+        <!-- Top-level nav: Connect/Disconnect, Select a Bot, Settings (U3). -->
+        <nav class="topbar__nav" id="nav-region"></nav>
+        <!-- Connection-phase status text only — errors live in #error-region (U3). -->
+        <span class="topbar__status" id="status-region"></span>
+      </header>
 
-      <!-- Main area: terminals + status; idle placeholder until connected. -->
-      <main class="workspace" id="workspace">
-        <section class="status-bar" id="status-bar"></section>
+      <!--
+        Selected-bot line (U3): <bot name> + Hermes / Dashboard / Linux links.
+        Empty until a bot is selected.
+      -->
+      <div class="selected-bot" id="selected-bot-region"></div>
+
+      <!--
+        Error-class surface (U7 / R6): each failure class renders its own
+        distinct, actionable card here, above the content area, regardless of
+        which view is active. Empty until an error is surfaced.
+      -->
+      <section class="error-region" id="error-region"></section>
+
+      <!--
+        Content area (U4): shows ONE surface at a time. #content-panel is the
+        replaceChildren target for dialogs (bot list / Settings / first-run CTA);
+        the two terminal containers are PERSISTENT siblings (never destroyed) that
+        the router shows/hides via the .hidden class so their xterm scrollback and
+        live PTY survive view switches.
+      -->
+      <main class="content" id="content">
         <!--
-          Error-class surface (U7 / R11, R2, R16): each failure class
-          (unreachable, mismatch, provisioning, signer, wrong-port,
-          connection-lost) renders its own distinct, actionable card here.
-          Empty until an error is surfaced.
+          Dialog panel: the bot list + add/edit form (Select a Bot) and the
+          public-key controls (Settings). The existing controllers render into
+          these region ids; the router (main.ts) shows/hides them per view.
         -->
-        <section class="error-region" id="error-region"></section>
-        <!--
-          Dashboard tunnel status (U6 / R12, R13): active/inactive badge, the
-          copyable loopback URL, and an explicit "Open Dashboard" button.
-          Rendered by main.ts from the connected sub-state; empty until connected.
-        -->
-        <section class="tunnel-bar" id="tunnel-region"></section>
-        <section class="terminals" id="terminals">
-          <div class="terminal-pane">
-            <div class="terminal-pane__label">Host shell</div>
-            <div class="terminal-host" id="terminal-host"></div>
-          </div>
-          <div class="terminal-pane">
-            <div class="terminal-pane__label">Hermes attach</div>
-            <div class="terminal-host" id="terminal-attach"></div>
-          </div>
-        </section>
+        <div class="content-panel" id="content-panel">
+          <div id="bot-list-region"></div>
+          <div id="bot-form-region"></div>
+          <div id="key-region"></div>
+        </div>
+        <!-- Persistent terminals: shown one at a time, never destroyed (U5). -->
+        <div class="term-pane hidden" id="terminal-host"></div>
+        <div class="term-pane hidden" id="terminal-attach"></div>
       </main>
     </div>
+
     <!--
       Modal mount point (U7 / KTD5): the first-contact host-key trust modal
       mounts here, above the app shell. Empty until a host-key prompt arrives.

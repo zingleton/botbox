@@ -75,25 +75,22 @@ body {
 }
 
 #app.app {
-  display: grid;
-  grid-template-columns: 264px 1fr;
+  display: flex;
+  flex-direction: column;
   height: 100vh;
   overflow: hidden;
 }
 
-/* ── Sidebar ── */
+/* ── Top bar: brand + nav + connection status ── */
 
-.sidebar {
-  background: var(--bg-sidebar);
-  border-right: 1px solid hsl(var(--border));
+.topbar {
   display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.sidebar__header {
-  padding: 16px;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
   border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--card));
+  min-height: 52px;
 }
 
 .brand {
@@ -104,10 +101,158 @@ body {
   color: hsl(var(--primary));
 }
 
-.sidebar__body {
-  padding: 12px;
-  overflow-y: auto;
+/* ── Top-bar nav (Connect/Disconnect, Select a Bot, Settings) ── */
+
+.topbar__nav {
+  display: flex;
+  gap: 6px;
+}
+
+.nav-btn {
+  font: inherit;
+  font-weight: 500;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.nav-btn:hover:not(:disabled) {
+  background: hsl(var(--secondary));
+}
+
+.nav-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.nav-btn--active {
+  background: hsl(var(--accent));
+  border-color: hsl(var(--primary) / 0.45);
+  color: hsl(var(--primary));
+  font-weight: 600;
+}
+
+.nav-btn--primary {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  border-color: hsl(var(--primary));
+  font-weight: 600;
+  box-shadow: 0 1px 0 hsl(var(--primary) / 0.35),
+    0 2px 8px hsl(var(--primary) / 0.25);
+}
+
+.nav-btn--primary:hover:not(:disabled) {
+  background: hsl(var(--primary) / 0.92);
+}
+
+/* Connection-phase status text (top bar, trailing). Errors live in #error-region. */
+.topbar__status {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-dim);
+}
+
+.topbar__status[data-phase="connected"] {
+  color: hsl(var(--success));
+}
+
+.topbar__status[data-phase="connecting"] {
+  color: hsl(var(--primary));
+}
+
+.topbar__status[data-phase="connection-lost"] {
+  color: var(--danger);
+}
+
+/* ── Selected-bot line: <name> + Hermes / Dashboard / Linux links ── */
+
+.selected-bot:empty {
+  display: none;
+}
+
+.selected-bot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 16px;
+  border-bottom: 1px solid hsl(var(--border));
+  background: var(--bg-sidebar);
+  min-height: 40px;
+}
+
+.selected-bot__name {
+  font-weight: 600;
+}
+
+.selected-bot__links {
+  display: flex;
+  gap: 4px;
+}
+
+.link-btn {
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 10px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  background: transparent;
+  color: hsl(var(--primary));
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.link-btn:hover:not(:disabled) {
+  background: hsl(var(--accent));
+}
+
+.link-btn:disabled {
+  color: var(--fg-dim);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.link-btn--active {
+  background: hsl(var(--accent));
+  border-color: hsl(var(--primary) / 0.45);
+  font-weight: 600;
+}
+
+/* ── Content area: one surface at a time ── */
+
+.content {
+  position: relative;
   flex: 1;
+  min-height: 0;
+  background: var(--bg);
+}
+
+/* The dialog panel and the two terminals stack in the same box; exactly one is
+   visible (the others carry .hidden). Terminals are never destroyed on a view
+   switch, so their scrollback + live PTY survive. */
+.content-panel,
+.term-pane {
+  position: absolute;
+  inset: 0;
+}
+
+.content-panel {
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.term-pane {
+  padding: 6px 8px;
+  background: hsl(var(--term-bg));
+}
+
+.hidden {
+  display: none !important;
 }
 
 /* First-run CTA */

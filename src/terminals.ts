@@ -55,6 +55,10 @@ export interface TerminalDeps {
   backend: TerminalBackend;
   channelFactory: RawChannelFactory;
   panes: Record<PaneKind, TerminalPane>;
+  /** Single-panel re-layout: called on a partial open (host shell live, Hermes
+   *  attach failed) so the content view can switch from Hermes to the working
+   *  Linux shell instead of stranding the user on the attach-failure banner. */
+  onPartialOpen?: () => void;
 }
 
 const ENCODER = new TextEncoder();
@@ -168,6 +172,9 @@ export class TerminalController {
         // Partial-open (KTD6): host stays live, attach shows its specific error.
         const msg = result.attachError?.message ?? "Attach failed.";
         attach.showBanner(`Hermes attach failed: ${msg}`);
+        // Single-panel re-layout: route the user to the live Linux shell rather
+        // than the dead Hermes view the connect auto-switched to.
+        this.deps.onPartialOpen?.();
       }
 
       this.openedForBot = botId;

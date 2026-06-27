@@ -147,6 +147,18 @@ export class TerminalPane {
     this.resizeObserver.observe(container);
   }
 
+  /**
+   * Show/hide-aware fit for the single-panel router. The router toggles the
+   * container's visibility (CSS `.hidden`); on show it calls this so xterm
+   * measures the now-laid-out container (it cannot while `display:none`) and a
+   * live PTY gets a `window_change`. On hide it is a no-op. Never resets — the
+   * buffer/scrollback and live state survive view switches (KTD: persistent
+   * terminals).
+   */
+  setVisible(visible: boolean): void {
+    if (visible) this.fit();
+  }
+
   /** Re-fit to the container; safe to call before a PTY exists. */
   fit(): void {
     try {

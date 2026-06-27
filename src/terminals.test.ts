@@ -15,7 +15,7 @@ import {
   type TerminalBackend,
   type OpenTerminalsResult,
 } from "./terminals";
-import type { PaneKind, TerminalPane } from "./terminal";
+import { TerminalPane, type PaneKind } from "./terminal";
 import type { ConnectionState } from "./state";
 
 /** A fake pane recording the lifecycle calls + bytes written. */
@@ -80,6 +80,7 @@ describe("TerminalController (U5)", () => {
   let attach: FakePane;
   let panes: Record<PaneKind, TerminalPane>;
   let channels: RawChannel[];
+  let partialOpen: ReturnType<typeof vi.fn>;
   let backend: {
     openTerminals: ReturnType<typeof vi.fn>;
     ptyWrite: ReturnType<typeof vi.fn>;
@@ -92,6 +93,7 @@ describe("TerminalController (U5)", () => {
     host = made.host;
     attach = made.attach;
     channels = [];
+    partialOpen = vi.fn();
     backend = {
       openTerminals: vi
         .fn()
@@ -110,6 +112,7 @@ describe("TerminalController (U5)", () => {
         return c;
       },
       panes,
+      onPartialOpen: partialOpen,
     });
 
   it("opens both PTYs on connected, passing the host pane's initial size", async () => {
@@ -170,6 +173,17 @@ describe("TerminalController (U5)", () => {
     expect(host.live).toBe(true);
     expect(attach.live).toBe(false);
     expect(attach.banners.join(" ")).toContain("no tmux session");
+    // Single-panel re-layout: route the user to the live Linux shell.
+    expect(partialOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it("a full open does not fire onPartialOpen", async () => {
+    const c = make();
+    c.onConnectionState(connected());
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(attach.live).toBe(true);
+    expect(partialOpen).not.toHaveBeenCalled();
   });
 
   it("a host-open failure banners both panes", async () => {
@@ -250,5 +264,25 @@ describe("TerminalController (U5)", () => {
     await Promise.resolve();
 
     expect(backend.openTerminals).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("TerminalPane.setVisible (U5)", () => {
+  it("fits on show and is a no-op on hide (never resets the buffer)", () => {
+    const pane = new TerminalPane("host");
+    // Stub fit (it would touch a canvas jsdom can't provide) and reset (proves
+    // a view toggle never clears the buffer); we assert how setVisible calls them.
+    const fit = vi.spyOn(pane, "fit").mockImplementation(() => {});
+    const reset = vi
+      .spyOn(pane.terminal, "reset")
+      .mockReturnValue(undefined as never);
+
+    pane.setVisible(true);
+    expect(fit).toHaveBeenCalledTimes(1);
+
+    pane.setVisible(false);
+    // No extra fit on hide; the buffer is never reset on a view toggle.
+    expect(fit).toHaveBeenCalledTimes(1);
+    expect(reset).not.toHaveBeenCalled();
   });
 });
