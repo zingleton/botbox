@@ -284,13 +284,6 @@ body {
   line-height: 1.5;
 }
 
-.cta__steps {
-  margin: 4px 0;
-  padding-left: 18px;
-  color: var(--fg-dim);
-  line-height: 1.6;
-}
-
 .cta__actions {
   display: flex;
   gap: 8px;

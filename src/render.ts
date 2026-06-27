@@ -128,9 +128,7 @@ function button(
 
 export interface SidebarHandlers {
   onSelectBot: (botId: string) => void;
-  /** U2 wires this to the generate-key flow. */
-  onGenerateKey?: () => void;
-  /** U3 wires this to the add-bot flow. */
+  /** Wires the first-run CTA's "Add a bot" button to the add-bot flow. */
   onAddBot?: () => void;
 }
 
@@ -166,28 +164,11 @@ export function renderFirstRunCta(handlers: SidebarHandlers): HTMLElement {
   const body = document.createElement("p");
   body.className = "cta__body";
   body.textContent =
-    "To reach a remote Hermes bot, first generate your SSH key, then add a bot.";
-
-  const steps = document.createElement("ol");
-  steps.className = "cta__steps";
-  for (const label of ["Generate key", "Add a bot"]) {
-    const li = document.createElement("li");
-    li.textContent = label;
-    steps.appendChild(li);
-  }
-
-  const genBtn = document.createElement("button");
-  genBtn.className = "btn btn--primary";
-  genBtn.textContent = "Generate key";
-  genBtn.setAttribute("data-action", "generate-key");
-  // Enabled only once a handler is provided (U2). U1 ships it disabled.
-  genBtn.disabled = !handlers.onGenerateKey;
-  if (handlers.onGenerateKey) {
-    genBtn.addEventListener("click", handlers.onGenerateKey);
-  }
+    "Your SSH key is ready. Add a bot to get started, then copy your public " +
+    "key from Settings to provision it.";
 
   const addBtn = document.createElement("button");
-  addBtn.className = "btn";
+  addBtn.className = "btn btn--primary";
   addBtn.textContent = "Add a bot";
   addBtn.setAttribute("data-action", "add-bot");
   addBtn.disabled = !handlers.onAddBot;
@@ -197,9 +178,9 @@ export function renderFirstRunCta(handlers: SidebarHandlers): HTMLElement {
 
   const actions = document.createElement("div");
   actions.className = "cta__actions";
-  actions.append(genBtn, addBtn);
+  actions.append(addBtn);
 
-  wrap.append(title, body, steps, actions);
+  wrap.append(title, body, actions);
   return wrap;
 }
 

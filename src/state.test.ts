@@ -198,25 +198,33 @@ describe("first-run rendering (idle empty state)", () => {
     statusBar = document.getElementById("status-bar")!;
   });
 
-  it("renders the first-run CTA (generate key -> add bot) on an empty bot list", () => {
+  it("renders the first-run CTA with no manual generate button (key is auto-created)", () => {
     renderSidebar(region, initialState(), { onSelectBot: () => {} });
 
-    const cta = region.querySelector('[data-testid="first-run-cta"]');
-    expect(cta).not.toBeNull();
-    const steps = [...region.querySelectorAll(".cta__steps li")].map(
-      (li) => li.textContent,
-    );
-    expect(steps).toEqual(["Generate key", "Add a bot"]);
+    expect(region.querySelector('[data-testid="first-run-cta"]')).not.toBeNull();
+    // The SSH key is generated automatically on first run — no button for it.
+    expect(region.querySelector('[data-action="generate-key"]')).toBeNull();
 
-    // U1 ships the CTA buttons disabled (handlers land in U2/U3).
-    const genBtn = region.querySelector<HTMLButtonElement>(
-      '[data-action="generate-key"]',
-    );
+    // Add-a-bot is the CTA's primary action; disabled until a handler is wired.
     const addBtn = region.querySelector<HTMLButtonElement>(
       '[data-action="add-bot"]',
     );
-    expect(genBtn?.disabled).toBe(true);
+    expect(addBtn).not.toBeNull();
     expect(addBtn?.disabled).toBe(true);
+  });
+
+  it("enables the CTA Add-a-bot button when a handler is provided", () => {
+    let added = false;
+    renderSidebar(region, initialState(), {
+      onSelectBot: () => {},
+      onAddBot: () => (added = true),
+    });
+    const addBtn = region.querySelector<HTMLButtonElement>(
+      '[data-action="add-bot"]',
+    );
+    expect(addBtn?.disabled).toBe(false);
+    addBtn?.click();
+    expect(added).toBe(true);
   });
 
   it("renders a bot list (not the CTA) once bots exist", () => {

@@ -250,7 +250,6 @@ function render(state: AppState): void {
   if (isFirstRun(state)) {
     renderSidebar(el("bot-list-region"), state, {
       onSelectBot: (botId) => store.dispatch({ type: "select-bot", botId }),
-      onGenerateKey: generateKey,
       onAddBot: () => bots.openAdd(),
     });
   } else {
@@ -393,16 +392,20 @@ function boot(): void {
     console.warn("get_inventory failed", e);
   });
 
-  // Reveal an already-provisioned key on startup so the surface is populated
-  // without requiring a (re-)generate. A missing key is the expected first-run
-  // case, not an error.
+  // Reveal an already-provisioned key on startup, or auto-generate one on first
+  // run. The user needs a key to provision any bot, and creating an ed25519
+  // keypair is a benign, local, idempotent operation (`generate_key` →
+  // `store_if_absent`, which never overwrites an existing key and needs no
+  // Keychain auth), so we don't make them click a button for it. Rotating a key
+  // stays an explicit action; this only ever creates the *first* key.
   invoke<string>("get_public_key")
     .then((publicKey) => {
       keyView.publicKey = publicKey;
       renderKey();
     })
     .catch(() => {
-      // No key yet — leave the panel in its "generate" state silently.
+      // No key yet (expected first run) — generate one automatically.
+      void generateKey();
     });
 
   // U4: install the backend connection-event → store bridge so the staged
