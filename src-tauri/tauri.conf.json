@@ -1,0 +1,58 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Botbox",
+  "version": "0.1.0",
+  "identifier": "ai.aipowerguild.botbox",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "title": "Botbox",
+        "width": 1100,
+        "height": 720,
+        "minWidth": 760,
+        "minHeight": 520,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "img-src": "'self' data:",
+        "style-src": "'self'",
+        "script-src": "'self'",
+        "font-src": "'self' data:",
+        "connect-src": "'self' ipc: http://ipc.localhost",
+        "object-src": "'none'",
+        "base-uri": "'self'",
+        "frame-ancestors": "'none'"
+      },
+      "capabilities": ["default"]
+    }
+  },
+  "plugins": {},
+  "bundle": {
+    "active": true,
+    "targets": "dmg",
+    "category": "DeveloperTool",
+    "shortDescription": "Embedded-SSH client for remote Hermes bots",
+    "longDescription": "Botbox is a Tauri 2 macOS app that connects to remote Hermes bots over an embedded SSH client, multiplexing a host shell, a Hermes-attach terminal, and a dashboard port-forward over a single connection.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
+  }
+}

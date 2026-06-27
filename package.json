@@ -1,0 +1,32 @@
+{
+  "name": "botbox",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Botbox — embedded-SSH client for remote Hermes bots (macOS v1)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.5.0",
+    "@tauri-apps/plugin-opener": "2.2.6",
+    "@xterm/addon-fit": "0.10.0",
+    "@xterm/addon-webgl": "0.18.0",
+    "@xterm/xterm": "5.5.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.5.0",
+    "jsdom": "25.0.1",
+    "typescript": "5.6.3",
+    "vite": "5.4.21",
+    "vitest": "2.1.9"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  }
+}

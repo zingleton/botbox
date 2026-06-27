@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Botbox</title>
+    <!--
+      No inline <script> or <style>: the strict CSP in tauri.conf.json forbids
+      'unsafe-inline'. All JS comes from /main.ts (a module) and all CSS from
+      stylesheets Vite emits (styles.css + xterm's bundled CSS).
+    -->
+  </head>
+  <body>
+    <div id="app" class="app">
+      <!-- Left rail: bot inventory (U3 fills the dynamic list). -->
+      <aside class="sidebar" id="sidebar">
+        <header class="sidebar__header">
+          <span class="brand">Botbox</span>
+        </header>
+        <div class="sidebar__body" id="bot-list-region">
+          <!-- Bot list / first-run CTA rendered by main.ts from state. -->
+        </div>
+      </aside>
+
+      <!-- Main area: terminals + status; idle placeholder until connected. -->
+      <main class="workspace" id="workspace">
+        <section class="status-bar" id="status-bar"></section>
+        <section class="terminals" id="terminals">
+          <div class="terminal-pane">
+            <div class="terminal-pane__label">Host shell</div>
+            <div class="terminal-host" id="terminal-host"></div>
+          </div>
+          <div class="terminal-pane">
+            <div class="terminal-pane__label">Hermes attach</div>
+            <div class="terminal-host" id="terminal-attach"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>

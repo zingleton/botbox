@@ -1,0 +1,29 @@
+[package]
+name = "botbox"
+version = "0.1.0"
+description = "Botbox — embedded-SSH client for remote Hermes bots"
+authors = ["Botbox contributors"]
+license = "MIT"
+repository = "https://github.com/aipowerguild/botbox"
+edition = "2021"
+rust-version = "1.77.2"
+
+# The library is what Tauri (and the mobile entrypoints, later) link against.
+# `main.rs` is a thin shim that calls into it.
+[lib]
+name = "botbox_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# This feature is used for production builds or when a dev server is not
+# specified, DO NOT REMOVE!!
+custom-protocol = ["tauri/custom-protocol"]
