@@ -23,6 +23,44 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# ── U2: key generation + signer abstraction ──
+# `ssh-key` produces/consumes the OpenSSH public & private formats. We pin the
+# 0.6 line (0.6.7) deliberately: russh 0.54 (the version U4 resolves to under
+# our MSRV) vendors a fork of `ssh-key 0.6.7` and the same `ssh-encoding 0.2`
+# wire format, so the OpenSSH bytes we generate here round-trip into russh's
+# key types for publickey auth in U4. `ed25519` brings the dalek-backed signer;
+# `encryption` enables OpenSSH private-key (de)serialization; `getrandom` seeds
+# generation from the OS RNG.
+ssh-key = { version = "0.6", default-features = false, features = [
+  "alloc",
+  "std",
+  "ed25519",
+  "encryption",
+  "getrandom",
+] }
+# Redacting, zeroize-on-drop wrapper for in-memory private-key bytes (R3).
+zeroize = { version = "1", features = ["zeroize_derive"] }
+# ed25519 sign/verify primitives. `ssh-key` exposes conversions to/from these
+# dalek types under its `ed25519` feature, so we sign a raw challenge with the
+# same key bytes russh will use in U4. Version pinned to match ssh-key 0.6.
+ed25519-dalek = "2"
+# `ssh-key::PrivateKey::random` takes an `impl CryptoRngCore` from rand_core 0.6;
+# `OsRng` seeds generation from the OS CSPRNG.
+rand_core = { version = "0.6", features = ["std", "getrandom"] }
+
+# ── U2: Keychain storage (macOS) ──
+# Stored as a generic-password item scoped to the bundle id, accessible
+# `WhenUnlockedThisDeviceOnly`. macOS/iOS only; behind a target cfg so non-Apple
+# builds (and CI on Linux, if any) still compile the signer against the fake
+# store.
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+security-framework = "2"
+# `core-foundation` 0.9 matches the version `security-framework` 2.x links
+# against, so CFType handles cross the API boundary without a version mismatch.
+core-foundation = "0.9"
+# Re-exported Keychain constant values (the accessibility attribute value).
+security-framework-sys = "2"
+
 [features]
 # This feature is used for production builds or when a dev server is not
 # specified, DO NOT REMOVE!!

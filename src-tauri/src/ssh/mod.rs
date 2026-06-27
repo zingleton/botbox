@@ -1,0 +1,7 @@
+//! SSH module (U2 onward).
+//!
+//! U2 introduces the [`signer`] submodule: the `Signer` trait + the v1 ed25519
+//! implementation. Later units add `connection`, `pipeline`, `channels`,
+//! `forward`, and `known_hosts` (see the plan's Output Structure).
+
+pub mod signer;

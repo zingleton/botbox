@@ -225,7 +225,70 @@ body {
   border-color: var(--accent);
 }
 
+.btn--danger {
+  color: var(--danger);
+  border-color: var(--accent-dim);
+}
+
+.btn--danger:hover:not(:disabled) {
+  border-color: var(--danger);
+}
+
 .btn:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+/* ── SSH key surface (U2 / R2) ── */
+
+.sidebar__key {
+  border-top: 1px solid var(--border);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.key-panel__title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--fg-dim);
+}
+
+.key-panel__hint {
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: 13px;
+}
+
+.key-panel__value {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  max-height: 72px;
+  overflow: auto;
+  word-break: break-all;
+  user-select: all;
+}
+
+.key-panel__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.key-panel__notice {
+  font-size: 12px;
+  color: var(--ok);
+}
+
+.key-panel__notice--error {
+  color: var(--danger);
 }

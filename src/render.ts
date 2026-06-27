@@ -12,6 +12,109 @@
 
 import { isFirstRun, type AppState, type Bot } from "./state";
 
+// ── SSH key surface (U2 / R2, R17) ──────────────────────────────────────────
+
+/**
+ * View state for the always-available public-key surface. `null` publicKey =>
+ * no key provisioned yet (offer generate); a string => show + copy + export.
+ * `busy` disables actions during an in-flight backend round-trip.
+ */
+export interface KeyViewState {
+  publicKey: string | null;
+  busy: boolean;
+  /** Transient status line ("Copied", "Exported", or an error). */
+  notice: string | null;
+  noticeKind: "info" | "error" | null;
+}
+
+export interface KeyPanelHandlers {
+  /** Generate the key (idempotent) and reveal the public key. */
+  onGenerate: () => void;
+  /** Copy the public key to the clipboard. */
+  onCopy: () => void;
+  /** Export the private key (the caller owns the confirmation + path prompt). */
+  onExport: () => void;
+}
+
+export function renderKeyPanel(
+  region: HTMLElement,
+  key: KeyViewState,
+  handlers: KeyPanelHandlers,
+): void {
+  region.replaceChildren();
+  region.setAttribute("data-testid", "key-panel");
+
+  const title = document.createElement("div");
+  title.className = "key-panel__title";
+  title.textContent = "SSH key";
+
+  if (key.publicKey === null) {
+    // No key yet: a persistent affordance to generate one (in addition to the
+    // first-run CTA), so the surface is always available (R2).
+    const hint = document.createElement("p");
+    hint.className = "key-panel__hint";
+    hint.textContent = "No SSH key yet.";
+
+    const gen = button("Generate key", "key-generate", handlers.onGenerate, {
+      primary: true,
+      disabled: key.busy,
+    });
+
+    region.append(title, hint, gen);
+    appendNotice(region, key);
+    return;
+  }
+
+  // Key present: show a truncated, monospace preview + copy + export.
+  const value = document.createElement("code");
+  value.className = "key-panel__value";
+  value.setAttribute("data-testid", "public-key-value");
+  value.textContent = key.publicKey;
+  value.title = key.publicKey;
+
+  const actions = document.createElement("div");
+  actions.className = "key-panel__actions";
+  actions.append(
+    button("Copy", "key-copy", handlers.onCopy, { disabled: key.busy }),
+    button("Export private key…", "key-export", handlers.onExport, {
+      disabled: key.busy,
+      danger: true,
+    }),
+  );
+
+  region.append(title, value, actions);
+  appendNotice(region, key);
+}
+
+function appendNotice(region: HTMLElement, key: KeyViewState): void {
+  if (!key.notice) return;
+  const notice = document.createElement("div");
+  notice.className =
+    "key-panel__notice" +
+    (key.noticeKind === "error" ? " key-panel__notice--error" : "");
+  notice.setAttribute("data-testid", "key-notice");
+  notice.textContent = key.notice;
+  region.appendChild(notice);
+}
+
+function button(
+  label: string,
+  action: string,
+  onClick: () => void,
+  opts: { primary?: boolean; danger?: boolean; disabled?: boolean } = {},
+): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.className =
+    "btn" +
+    (opts.primary ? " btn--primary" : "") +
+    (opts.danger ? " btn--danger" : "");
+  b.textContent = label;
+  b.setAttribute("data-action", action);
+  b.disabled = !!opts.disabled;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
 export interface SidebarHandlers {
   onSelectBot: (botId: string) => void;
   /** U2 wires this to the generate-key flow. */

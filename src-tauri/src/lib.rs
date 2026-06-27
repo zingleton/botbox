@@ -13,29 +13,16 @@
 //!   - U5: `pty_write`, `pty_resize` (+ `ipc::Channel` raw byte streams)
 //!   - U6: `open_tunnel`, `open_dashboard`
 //!
-//! Each new command MUST be added to BOTH the `invoke_handler` below and the
-//! `core:default`/`allow` list in `capabilities/default.json`, or it will be
-//! unreachable from the webview by design (KTD8 / R18).
+//! Each new app-defined command MUST be added to the `invoke_handler` below
+//! (app commands are reachable via `core:default`; only *plugin* commands need a
+//! scope entry in `capabilities/default.json`). KTD8 / R18.
+//!
+//! U2 introduces `commands.rs` (the command surface, including the relocated
+//! `app_ready`) and the `ssh` + `keychain` modules.
 
-use serde::Serialize;
-
-/// Minimal "the webview booted" handshake. This is the one concrete command
-/// U1 exposes so the capability allowlist enumerates a real, used command
-/// (rather than relying on Tauri defaults). The frontend calls it once on
-/// startup; the response is currently informational only.
-#[derive(Debug, Serialize)]
-pub struct AppInfo {
-    pub name: String,
-    pub version: String,
-}
-
-#[tauri::command]
-fn app_ready() -> AppInfo {
-    AppInfo {
-        name: env!("CARGO_PKG_NAME").to_string(),
-        version: env!("CARGO_PKG_VERSION").to_string(),
-    }
-}
+pub mod commands;
+pub mod keychain;
+pub mod ssh;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -44,22 +31,18 @@ pub fn run() {
         // the capability file so it cannot open arbitrary URLs/paths. U6 uses
         // it to open the loopback dashboard URL.
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![app_ready])
+        .invoke_handler(tauri::generate_handler![
+            commands::app_ready,
+            commands::generate_key,
+            commands::get_public_key,
+            commands::export_key,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Botbox");
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn app_ready_reports_package_metadata() {
-        let info = app_ready();
-        assert_eq!(info.name, "botbox");
-        assert!(!info.version.is_empty());
-    }
-
     /// Smoke test for KTD8 / R18: the capability allowlist is the
     /// webview<->backend trust boundary. It must grant only what U1 needs and
     /// MUST NOT grant unused plugin scopes. App-defined commands (e.g.
