@@ -170,19 +170,20 @@ async fn real_bot_dashboard_tunnel() {
         }
     });
 
+    // Each network phase is bounded so a stall pinpoints itself instead of
+    // hanging the suite. NOTE: against a public bot under SSH-scanner load,
+    // sshd MaxStartups/LoginGraceTime throttling can delay connects; a clean
+    // run completes the whole flow in well under a second.
+    let step = Duration::from_secs(20);
+
     let cfg = ConnectConfig::for_user(&user);
-    let conn = connect(&addr, &cfg, signer, decider, prompt_tx)
+    let conn = tokio::time::timeout(step, connect(&addr, &cfg, signer, decider, prompt_tx))
         .await
+        .expect("connect timed out (bot likely throttling under load)")
         .expect("connect to real bot");
     let handle = conn.handle();
 
-    // Each network phase is bounded so a stall pinpoints itself instead of
-    // hanging the suite (a real-bot probe must never block indefinitely).
-    let step = Duration::from_secs(15);
-    let t0 = std::time::Instant::now();
-
     // Eager probe: a listening dashboard port must classify as healthy.
-    eprintln!("[probe] healthy port {dash_port}… (+{:?})", t0.elapsed());
     tokio::time::timeout(step, probe_dashboard_port(&handle, "127.0.0.1", dash_port))
         .await
         .expect("probe of the listening dashboard port timed out")
@@ -191,7 +192,6 @@ async fn real_bot_dashboard_tunnel() {
     // A wrong port must classify as wrong-port (nothing listening), distinct from
     // an SSH-down error — proving AE4 against the real bot.
     let wrong_port = dash_port.wrapping_add(1).max(1);
-    eprintln!("[probe] wrong port {wrong_port}… (+{:?})", t0.elapsed());
     let wrong = tokio::time::timeout(
         step,
         probe_dashboard_port(&handle, "127.0.0.1", wrong_port),
@@ -204,7 +204,6 @@ async fn real_bot_dashboard_tunnel() {
     );
 
     // Bind the loopback forward and fetch through the tunnel.
-    eprintln!("[forward] bind… (+{:?})", t0.elapsed());
     let forward = tokio::time::timeout(step, bind_and_forward(handle.clone(), "127.0.0.1", dash_port))
         .await
         .expect("bind_and_forward timed out")
@@ -223,17 +222,11 @@ async fn real_bot_dashboard_tunnel() {
         .expect("send request");
     let mut buf = Vec::new();
     let _ = tokio::time::timeout(Duration::from_secs(5), sock.read_to_end(&mut buf)).await;
-    eprintln!(
-        "dashboard returned {} bytes through the tunnel (+{:?})",
-        buf.len(),
-        t0.elapsed()
-    );
+    eprintln!("dashboard returned {} bytes through the tunnel", buf.len());
     assert!(!buf.is_empty(), "dashboard should respond through the tunnel");
 
-    eprintln!("[teardown] closing forward + connection… (+{:?})", t0.elapsed());
     forward.close();
     tokio::time::timeout(step, conn.close())
         .await
         .expect("conn.close timed out");
-    eprintln!("[done]");
 }
