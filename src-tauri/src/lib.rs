@@ -52,6 +52,9 @@ pub fn run() {
             commands::disconnect,
             commands::trust_host,
             commands::remove_known_host,
+            commands::open_terminals,
+            commands::pty_write,
+            commands::pty_resize,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Botbox");

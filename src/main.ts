@@ -9,10 +9,15 @@
  */
 
 import "./styles.css";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, Channel } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Store, type AppState, type Bot, isFirstRun } from "./state";
 import { ConnectionController } from "./connection";
+import {
+  TerminalController,
+  type RawChannel,
+  type OpenTerminalsResult,
+} from "./terminals";
 import {
   renderSidebar,
   renderStatusBar,
@@ -86,6 +91,9 @@ const connection = new ConnectionController({
 
 // Terminals are created once and re-used across state changes.
 let panes: Record<PaneKind, TerminalPane> | null = null;
+// U5 terminal controller (created in boot once the panes exist). Drives the live
+// PTY streams off the KTD9 connection phase.
+let terminals: TerminalController | null = null;
 
 /**
  * Key-surface view state (U2). Lives outside the KTD9 connection store because
@@ -111,7 +119,9 @@ function renderTerminals(state: AppState): void {
     panes.host.showIdlePlaceholder();
     panes.attach.showIdlePlaceholder();
   }
-  // connected / disconnected / connection-lost rendering lands in U5.
+  // U5: the terminal controller opens the PTYs on `connected`, banners on
+  // disconnect/lost, and resets otherwise — all off the KTD9 phase.
+  terminals?.onConnectionState(state.connection);
 }
 
 function renderKey(): void {
@@ -219,6 +229,27 @@ function boot(): void {
   panes = createTerminals({
     host: el("terminal-host"),
     attach: el("terminal-attach"),
+  });
+
+  // U5: wire the live PTY controller. It creates one Tauri `Channel<ArrayBuffer>`
+  // per pane (raw PTY bytes via `InvokeResponseBody::Raw`), passes them to
+  // `open_terminals`, and forwards input/resize through `pty_write`/`pty_resize`.
+  terminals = new TerminalController({
+    backend: {
+      openTerminals: (hostChannel, attachChannel, cols, rows) =>
+        invoke<OpenTerminalsResult>("open_terminals", {
+          hostChannel,
+          attachChannel,
+          cols,
+          rows,
+        }),
+      ptyWrite: (pane, data) =>
+        invoke<void>("pty_write", { pane, data: Array.from(data) }),
+      ptyResize: (pane, cols, rows) =>
+        invoke<void>("pty_resize", { pane, cols, rows }),
+    },
+    channelFactory: () => new Channel<ArrayBuffer>() as unknown as RawChannel,
+    panes,
   });
 
   store.subscribe(render);

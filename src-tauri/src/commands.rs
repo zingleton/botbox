@@ -27,6 +27,9 @@ use tauri::{Emitter, Manager};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::keychain::default_key_store;
+use crate::ssh::channels::{
+    open_attach_pty, open_host_pty, IpcChannelSink, PaneKind, PtyChannel, PtySize,
+};
 use crate::ssh::connection::{
     self, host_part, ConnectConfig, ConnectionManager, HostKeyPrompt, TrustResponse,
 };
@@ -214,12 +217,25 @@ const DEFAULT_SSH_USERNAME: &str = "root";
 /// Default SSH port appended to a bot `host` that carries no explicit port.
 const DEFAULT_SSH_PORT: u16 = 22;
 
-/// Tauri-managed connection state (one per app): the active-connection manager and
-/// the map of pending host-key trust prompts (host → responder).
+/// The two live PTY channels (U5). Held in [`SshState`] so `pty_write` /
+/// `pty_resize` can address each by pane after `open_terminals` opens them. The
+/// attach slot is `Option` because the attach PTY can fail to open while the host
+/// shell stays usable (KTD6 partial-open).
+#[derive(Default)]
+pub struct ActiveTerminals {
+    host: Option<PtyChannel>,
+    attach: Option<PtyChannel>,
+}
+
+/// Tauri-managed connection state (one per app): the active-connection manager, the
+/// map of pending host-key trust prompts (host → responder), and the live PTY
+/// channels (U5).
 pub struct SshState {
     manager: Arc<ConnectionManager>,
     /// Pending trust prompts awaiting the operator's `trust_host` answer.
     pending_trust: Arc<AsyncMutex<HashMap<String, tokio::sync::oneshot::Sender<TrustResponse>>>>,
+    /// The host + attach PTY channels for the active connection (U5).
+    terminals: Arc<AsyncMutex<ActiveTerminals>>,
 }
 
 impl Default for SshState {
@@ -227,6 +243,7 @@ impl Default for SshState {
         Self {
             manager: Arc::new(ConnectionManager::new()),
             pending_trust: Arc::new(AsyncMutex::new(HashMap::new())),
+            terminals: Arc::new(AsyncMutex::new(ActiveTerminals::default())),
         }
     }
 }
@@ -391,7 +408,9 @@ pub async fn connect(
             }
 
             // Validate-before-swap: install only now that auth succeeded — this
-            // tears down any prior active connection.
+            // tears down any prior active connection. Close the prior connection's
+            // PTY channels first (their read tasks reference the old handle).
+            close_terminals(&state.terminals).await;
             manager.install(conn).await;
 
             let _ = app.emit("connected", BotIdPayload { bot_id: bot.id.clone() });
@@ -442,11 +461,172 @@ pub async fn remove_known_host(app: tauri::AppHandle, host: String) -> Result<()
 }
 
 /// Tear down the active connection (operator Disconnect; R7/KTD9). Idempotent: a
-/// no-op when nothing is connected.
+/// no-op when nothing is connected. Closes the PTY channels first (stops their read
+/// tasks) and then the connection.
 #[tauri::command]
 pub async fn disconnect(state: tauri::State<'_, SshState>) -> Result<(), String> {
+    close_terminals(&state.terminals).await;
     state.manager.disconnect().await;
     Ok(())
+}
+
+/// Close + clear both PTY channels (stops their read tasks). Shared by the explicit
+/// Disconnect and the validate-before-swap teardown inside `connect`.
+async fn close_terminals(terminals: &AsyncMutex<ActiveTerminals>) {
+    let (host, attach) = {
+        let mut guard = terminals.lock().await;
+        (guard.host.take(), guard.attach.take())
+    };
+    if let Some(h) = host {
+        h.close().await;
+    }
+    if let Some(a) = attach {
+        a.close().await;
+    }
+}
+
+// ── PTY terminal commands (U5 / R8, R9, R10, R11 partial-open) ──────────────
+//
+// `open_terminals` opens BOTH PTYs off the single authenticated connection (R10),
+// as independent outcomes (KTD6): the host shell and the Hermes attach PTY are
+// opened separately, and an attach failure is reported without tearing the
+// connection down or losing the working host shell. The frontend passes one
+// `ipc::Channel<ArrayBuffer>` per pane; the per-channel read task ships raw PTY
+// bytes into it (KTD4). `pty_write` / `pty_resize` then address each pane by kind.
+
+/// The result of opening the two terminals: the host shell is required (a host
+/// failure is a hard error returned from the command), and the attach outcome is
+/// reported separately so the frontend can surface an attach-specific error while
+/// keeping the host shell live (KTD6).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenTerminalsResult {
+    /// `true` when the Hermes attach PTY opened; `false` + `attach_error` when it
+    /// failed but the host shell is still usable.
+    attach_ok: bool,
+    /// The attach-specific error (kind + message) when `attach_ok` is false. Its
+    /// `kind` is `attach-failure` (1:1 with the frontend `ConnectionErrorKind`).
+    attach_error: Option<AttachErrorPayload>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachErrorPayload {
+    kind: &'static str,
+    message: String,
+}
+
+/// Open the host-shell + Hermes-attach PTYs for the active connection (U5).
+///
+/// `host_channel` / `attach_channel` are the per-pane `ipc::Channel`s the frontend
+/// created; raw PTY bytes stream into them. `cols`/`rows` are the panes' initial
+/// sizes (passed to `request_pty`). The host shell must open or the command errors;
+/// the attach PTY runs the bot's configured `attach_command` (AE2) and its failure
+/// is reported in [`OpenTerminalsResult`] without aborting (KTD6).
+#[tauri::command]
+pub async fn open_terminals(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SshState>,
+    host_channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+    attach_channel: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+    cols: u32,
+    rows: u32,
+) -> Result<OpenTerminalsResult, String> {
+    let bot = selected_bot(&app)?;
+    let size = PtySize::new(cols.max(1), rows.max(1));
+
+    // Replace any prior terminals (e.g. reconnect) before opening fresh ones.
+    close_terminals(&state.terminals).await;
+
+    let host_sink = Arc::new(IpcChannelSink::new(host_channel));
+    let attach_sink = Arc::new(IpcChannelSink::new(attach_channel));
+
+    // Clone the shared `Arc<Handle>` out of the manager so the async PTY opens run
+    // after the manager lock is released (the `with_active` closure cannot be async).
+    // Both clones point at the SAME connection handle — the two PTYs ride one SSH
+    // connection (R10).
+    let handle = state
+        .manager
+        .with_active(|conn| conn.handle())
+        .await
+        .ok_or_else(|| "no active connection".to_string())?;
+
+    // Open the host shell first. A host failure means the whole terminal surface is
+    // down — return it as a hard error (no partial state stored).
+    let host = open_host_pty(handle.clone(), size, host_sink)
+        .await
+        .map_err(|e| e.message)?;
+
+    // Open the attach PTY independently (KTD6). Its failure does NOT abort: the host
+    // shell stays usable and the attach error is reported in the result.
+    let attach_result =
+        open_attach_pty(handle.clone(), &bot.attach_command, size, attach_sink).await;
+
+    let mut guard = state.terminals.lock().await;
+    guard.host = Some(host);
+
+    match attach_result {
+        Ok(attach) => {
+            guard.attach = Some(attach);
+            Ok(OpenTerminalsResult {
+                attach_ok: true,
+                attach_error: None,
+            })
+        }
+        Err(e) => Ok(OpenTerminalsResult {
+            attach_ok: false,
+            attach_error: Some(AttachErrorPayload {
+                kind: e.kind.as_kind(),
+                message: e.message,
+            }),
+        }),
+    }
+}
+
+/// Forward operator keystrokes to a pane's remote PTY (input path; KTD4).
+/// `pane` is `"host"` or `"attach"`. `data` is the raw `onData` payload.
+#[tauri::command]
+pub async fn pty_write(
+    state: tauri::State<'_, SshState>,
+    pane: String,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    let kind = parse_pane(&pane)?;
+    let guard = state.terminals.lock().await;
+    let channel = pane_channel(&guard, kind).ok_or_else(|| format!("{pane} terminal is not open"))?;
+    channel.write(&data).await.map_err(|e| e.to_string())
+}
+
+/// Inform a pane's remote PTY of a new size (resize path → `window_change`; KTD4).
+#[tauri::command]
+pub async fn pty_resize(
+    state: tauri::State<'_, SshState>,
+    pane: String,
+    cols: u32,
+    rows: u32,
+) -> Result<(), String> {
+    let kind = parse_pane(&pane)?;
+    let guard = state.terminals.lock().await;
+    let channel = pane_channel(&guard, kind).ok_or_else(|| format!("{pane} terminal is not open"))?;
+    channel
+        .resize(PtySize::new(cols.max(1), rows.max(1)))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn parse_pane(pane: &str) -> Result<PaneKind, String> {
+    match pane {
+        "host" => Ok(PaneKind::Host),
+        "attach" => Ok(PaneKind::Attach),
+        other => Err(format!("unknown pane `{other}` (expected host|attach)")),
+    }
+}
+
+fn pane_channel(terminals: &ActiveTerminals, kind: PaneKind) -> Option<&PtyChannel> {
+    match kind {
+        PaneKind::Host => terminals.host.as_ref(),
+        PaneKind::Attach => terminals.attach.as_ref(),
+    }
 }
 
 fn emit_stage(app: &tauri::AppHandle, stage: &'static str) {

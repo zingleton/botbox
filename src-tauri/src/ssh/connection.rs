@@ -323,6 +323,12 @@ impl Handler for ClientHandler {
 
 // ── Connection actor + driver ───────────────────────────────────────────────
 
+/// The shared `russh` client handle U5/U6 open channels through. The `Handle`'s
+/// channel-opening + I/O methods take `&self` (they only touch the internal mpsc to
+/// the session task), so an `Arc` is enough to share it across the driver task and
+/// the PTY/forward channels without a `&mut Session` (KTD3).
+pub type SharedHandle = Arc<Handle<ClientHandler>>;
+
 /// Events the connection actor emits to the command/UI layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionEvent {
@@ -356,7 +362,7 @@ impl std::fmt::Debug for Connection {
 
 impl Connection {
     /// The shared handle U5/U6 open channels through (clone the `Arc`).
-    pub fn handle(&self) -> Arc<Handle<ClientHandler>> {
+    pub fn handle(&self) -> SharedHandle {
         self.handle.clone()
     }
 
