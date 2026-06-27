@@ -152,6 +152,9 @@ class FakeBackend implements BotBackend {
   async listBots() {
     return [...this.bots];
   }
+  async getInventory() {
+    return { bots: [...this.bots], selectedBotId: this.selected };
+  }
   async addBot(input: BotInput) {
     this.added.push(input);
     const b: Bot = {
@@ -217,6 +220,17 @@ describe("BotsController", () => {
     backend.bots = [bot("a"), bot("b")];
     await controller.load();
     expect(store.getState().bots.map((x) => x.id)).toEqual(["a", "b"]);
+  });
+
+  it("restores the persisted selection at boot via get_inventory", async () => {
+    // The backend persists a selection; boot must restore it so the highlight
+    // matches the bot the backend `connect` resolves from (not selectedBotId:null).
+    const { store, backend, controller } = makeController();
+    backend.bots = [bot("a"), bot("b")];
+    backend.selected = "b";
+    await controller.load();
+    expect(store.getState().bots.map((x) => x.id)).toEqual(["a", "b"]);
+    expect(store.getState().selectedBotId).toBe("b");
   });
 
   it("add flow: blank attach/port are omitted so the backend defaults apply", async () => {

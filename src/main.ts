@@ -56,6 +56,8 @@ const store = new Store();
 const bots = new BotsController({
   backend: {
     listBots: () => invoke<Bot[]>("list_bots"),
+    getInventory: () =>
+      invoke<{ bots: Bot[]; selectedBotId: string | null }>("get_inventory"),
     addBot: (input: BotInput) => invoke<Bot>("add_bot", { input }),
     updateBot: (id: string, input: BotInput) =>
       invoke<Bot>("update_bot", { id, input }),
@@ -273,11 +275,25 @@ function errorContext(state: AppState): ErrorContext {
   };
 }
 
-/** Retry / reconnect to the selected bot (U7 unreachable-retry + connection-lost
- *  reconnect). Clears the surfaced error first, then re-runs the connect. */
+/** Retry / reconnect to the bot the failure was *about* (U7 unreachable-retry +
+ *  connection-lost reconnect). For a `connection-lost` surface the affected bot is
+ *  carried on the phase (`connection.botId`) — selection may be null or point at a
+ *  different bot — so we target that; otherwise we fall back to the selected bot.
+ *  Clears the surfaced error first, then re-runs the connect. */
 async function retryConnect(): Promise<void> {
-  const botId = store.getState().selectedBotId;
+  const state = store.getState();
+  const botId =
+    state.connection.phase === "connection-lost"
+      ? state.connection.botId
+      : state.selectedBotId;
   if (!botId) return;
+  // The backend `connect` resolves the bot from the PERSISTED selection, so make
+  // the persisted selection match the bot we're resuming when it differs (a
+  // connection-lost bot may not be the currently-selected one). Outside the
+  // `connected` phase this never prompts.
+  if (store.getState().selectedBotId !== botId) {
+    await bots.select(botId);
+  }
   store.dispatch({ type: "clear-error" });
   await connection.connect(botId);
 }
@@ -334,10 +350,11 @@ function boot(): void {
   store.subscribe(render);
   renderKey();
 
-  // Load the persisted bot inventory (U3). A failure leaves the first-run CTA
-  // up rather than erroring the boot.
+  // Load the persisted bot inventory + selection (U3) via `get_inventory`, so the
+  // frontend restores the persisted `selectedBotId` (the bot the backend `connect`
+  // resolves from). A failure leaves the first-run CTA up rather than erroring boot.
   bots.load().catch((e) => {
-    console.warn("list_bots failed", e);
+    console.warn("get_inventory failed", e);
   });
 
   // Reveal an already-provisioned key on startup so the surface is populated

@@ -369,8 +369,18 @@ export interface BotInput {
  * Backend bridge, injectable so tests run without Tauri. In production this is
  * `@tauri-apps/api/core`'s `invoke`, narrowed to the bot commands.
  */
+/** The persisted inventory document the backend `get_inventory` returns (bots +
+ *  the persisted selection the backend `connect` resolves from). */
+export interface BotInventory {
+  bots: Bot[];
+  selectedBotId: string | null;
+}
+
 export interface BotBackend {
   listBots(): Promise<Bot[]>;
+  /** The full inventory: bots + the persisted selection (restored at boot so the
+   *  frontend highlight matches the bot the backend will connect). */
+  getInventory(): Promise<BotInventory>;
   addBot(input: BotInput): Promise<Bot>;
   updateBot(id: string, input: BotInput): Promise<Bot>;
   removeBot(id: string): Promise<void>;
@@ -425,10 +435,15 @@ export class BotsController {
     };
   }
 
-  /** Load the persisted bots into the store on boot. */
+  /** Load the persisted inventory into the store on boot. Uses `get_inventory`
+   *  (bots + the persisted selection) so the frontend restores `selectedBotId`
+   *  and the bot-list highlight matches the bot the backend `connect` resolves
+   *  from — rather than starting `selectedBotId: null` while the backend connects
+   *  the persisted bot. */
   async load(): Promise<void> {
-    const bots = await this.deps.backend.listBots();
+    const { bots, selectedBotId } = await this.deps.backend.getInventory();
     this.deps.dispatch({ type: "set-bots", bots });
+    this.deps.dispatch({ type: "select-bot", botId: selectedBotId });
   }
 
   openAdd(): void {

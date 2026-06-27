@@ -22,6 +22,7 @@
 //! `app_ready`) and the `ssh` + `keychain` modules.
 
 pub mod commands;
+pub mod fs;
 pub mod keychain;
 pub mod ssh;
 pub mod store;

@@ -322,6 +322,7 @@ describe("explicit Disconnect (U7)", () => {
     const controller = new BotsController({
       backend: {
         listBots: vi.fn(),
+        getInventory: vi.fn(),
         addBot: vi.fn(),
         updateBot: vi.fn(),
         removeBot: vi.fn(),

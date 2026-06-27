@@ -248,6 +248,36 @@ fn save_tightens_preexisting_loose_perms() {
     assert_eq!(mode, 0o600);
 }
 
+// ── Backward-compat: old bots.json without `username` still loads ───────────
+
+#[test]
+fn old_bots_json_without_username_deserializes_to_default_user() {
+    // A `bots.json` written before the `username` field existed: the bot objects
+    // carry no `username` key. Without `#[serde(default)]` on the field this would
+    // fail to deserialize and the WHOLE saved inventory would be lost on upgrade.
+    let legacy = r#"{
+        "bots": [
+            {
+                "id": "old-1",
+                "name": "Legacy",
+                "host": "203.0.113.7",
+                "attachCommand": "tmux attach -t hermes",
+                "dashboardPort": 9119
+            }
+        ],
+        "selectedBotId": "old-1"
+    }"#;
+
+    let inv: BotInventory = serde_json::from_str(legacy).expect("legacy bots.json must still load");
+    assert_eq!(inv.bots.len(), 1, "the saved bot is preserved across upgrade");
+    let bot = &inv.bots[0];
+    assert_eq!(bot.id, "old-1");
+    assert_eq!(bot.host, "203.0.113.7");
+    // The missing field falls back to the canonical default user.
+    assert_eq!(bot.username, DEFAULT_SSH_USERNAME);
+    assert_eq!(inv.selected_bot_id.as_deref(), Some("old-1"));
+}
+
 // ── JSON-encoding correctness: surprising characters round-trip (R4) ────────
 
 #[test]

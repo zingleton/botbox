@@ -64,13 +64,25 @@ pub struct Bot {
     pub name: String,
     pub host: String,
     /// SSH login user. Always concrete on a persisted bot — the default
-    /// ([`DEFAULT_SSH_USERNAME`]) is baked in at add time (R6).
+    /// ([`DEFAULT_SSH_USERNAME`]) is baked in at add time (R6). The serde default
+    /// covers a `bots.json` written before this field existed (the field was added
+    /// after the initial schema): an old file with no `username` key deserializes
+    /// to the canonical default user rather than failing the whole load and losing
+    /// the saved inventory on upgrade.
+    #[serde(default = "default_username")]
     pub username: String,
     /// Hermes attach command. Always concrete on a persisted bot — the default
     /// is baked in at add time, never left blank (R6).
     pub attach_command: String,
     /// Remote dashboard port U6 forwards to a loopback port.
     pub dashboard_port: u16,
+}
+
+/// Serde default for [`Bot::username`]: the canonical default SSH user. Used when
+/// deserializing a `bots.json` written before the `username` field existed, so an
+/// upgrade does not lose the saved inventory.
+fn default_username() -> String {
+    DEFAULT_SSH_USERNAME.to_string()
 }
 
 /// Fields the operator supplies when adding/editing a bot. The attach command
@@ -356,43 +368,8 @@ impl BotStore for JsonBotStore {
         }
         let json = serde_json::to_vec_pretty(inventory)
             .map_err(|e| StoreError::Backend(format!("serialize: {e}")))?;
-        write_0600(&self.path, &json)
+        crate::fs::write_0600(&self.path, &json)
             .map_err(|e| StoreError::Backend(format!("write {}: {e}", self.path.display())))
-    }
-}
-
-/// Write `bytes` to `path`, creating the file with `0600` (owner read/write only)
-/// from the start so it is never momentarily group/world-readable, and tightening
-/// perms if the file pre-existed with looser bits (mirrors the `export_key`
-/// writer in `commands.rs`).
-fn write_0600(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        f.write_all(bytes)?;
-        f.flush()?;
-        // `mode()` only applies when the file is created; if it pre-existed with
-        // looser perms, tighten it explicitly.
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-        Ok(())
-    }
-
-    #[cfg(not(unix))]
-    {
-        // Non-Unix (not a v1 target) — write without the Unix perm guarantee.
-        let mut f = std::fs::File::create(path)?;
-        f.write_all(bytes)?;
-        f.flush()?;
-        Ok(())
     }
 }
 

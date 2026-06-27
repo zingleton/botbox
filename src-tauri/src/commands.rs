@@ -93,42 +93,7 @@ pub fn export_key(path: String) -> Result<(), String> {
     let secret = signer()
         .export_openssh_private()
         .map_err(|e| e.to_string())?;
-    write_private_key_0600(&path, secret.expose()).map_err(|e| e.to_string())
-}
-
-/// Write `bytes` to `path` creating the file with `0600` (owner read/write
-/// only) from the start — the perms are part of the open, so the file is never
-/// momentarily group/world-readable.
-fn write_private_key_0600(path: &str, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        f.write_all(bytes)?;
-        f.flush()?;
-        // If the file pre-existed with looser perms, `mode()` does not tighten
-        // it; enforce 0600 explicitly.
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(path, perms)?;
-        Ok(())
-    }
-
-    #[cfg(not(unix))]
-    {
-        // Non-Unix (not a v1 target) — write without the Unix perm guarantee.
-        let mut f = std::fs::File::create(path)?;
-        f.write_all(bytes)?;
-        f.flush()?;
-        Ok(())
-    }
+    crate::fs::write_0600(std::path::Path::new(&path), secret.expose()).map_err(|e| e.to_string())
 }
 
 // ── Bot inventory commands (U3 / R4, R5, R6) ───────────────────────────────
@@ -713,13 +678,83 @@ pub async fn open_tunnel(
 pub async fn open_dashboard(app: tauri::AppHandle, url: String) -> Result<(), String> {
     // Defense in depth: even though the opener scope is loopback-only, refuse a
     // non-loopback URL here so the app command matches the plugin scope exactly.
-    if !(url.starts_with("http://127.0.0.1:") || url.starts_with("http://localhost:")) {
+    // A real parse (not a prefix check) — `http://127.0.0.1:1@evil.com/` has a
+    // *userinfo* of `127.0.0.1:1`; its real host is `evil.com`, which a prefix
+    // match would wrongly accept.
+    if !is_loopback_http_url(&url) {
         return Err(format!("refusing to open non-loopback dashboard URL: {url}"));
     }
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .open_url(url, None::<String>)
         .map_err(|e| e.to_string())
+}
+
+/// Whether `url` is an `http://` URL whose authority host is exactly a loopback
+/// literal (`127.0.0.1`, `localhost`, or `[::1]`).
+///
+/// Parses the authority rather than prefix-matching the string, so userinfo
+/// tricks like `http://127.0.0.1:1@evil.com/` (real host `evil.com`) are rejected.
+/// The scheme must be exactly `http` (the dashboard is plain-HTTP loopback); any
+/// `@` userinfo is rejected outright; the host must equal a loopback literal after
+/// stripping an optional `:port`.
+fn is_loopback_http_url(url: &str) -> bool {
+    // Scheme must be exactly `http://` (case-sensitive is fine for our own URLs).
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+
+    // The authority runs up to the first `/`, `?`, or `#`.
+    let authority_end = rest
+        .find(['/', '?', '#'])
+        .unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+
+    // Any userinfo (`user[:pass]@host`) means the host is NOT the literal before
+    // the `@` — reject rather than try to interpret it.
+    if authority.contains('@') {
+        return false;
+    }
+
+    // Strip an optional `:port`. IPv6 literals are bracketed (`[::1]:port`), so
+    // for a bracketed host the port (if any) follows the closing `]`.
+    let host = if authority.starts_with('[') {
+        match authority.find(']') {
+            // Host is the bracketed literal, INCLUDING the brackets (`[::1]`). What
+            // follows the `]` must be empty or a valid `:port`; else it's malformed.
+            Some(close) => {
+                if !is_empty_or_port(&authority[close + 1..]) {
+                    return false;
+                }
+                &authority[..=close]
+            }
+            None => return false, // malformed bracket
+        }
+    } else {
+        match authority.rsplit_once(':') {
+            Some((h, port)) => {
+                // The part after `:` must be a non-empty all-digit port; otherwise
+                // this `:` is not a port separator and the authority is malformed.
+                if !is_port(port) {
+                    return false;
+                }
+                h
+            }
+            None => authority,
+        }
+    };
+
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]")
+}
+
+/// A non-empty all-ASCII-digit port string.
+fn is_port(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Empty, or a `:port` suffix (the part after a bracketed IPv6 host's `]`).
+fn is_empty_or_port(s: &str) -> bool {
+    s.is_empty() || s.strip_prefix(':').is_some_and(is_port)
 }
 
 // ── PTY terminal commands (U5 / R8, R9, R10, R11 partial-open) ──────────────
@@ -916,6 +951,33 @@ mod tests {
         assert!(!info.version.is_empty());
     }
 
+    /// The loopback guard parses the authority instead of prefix-matching, so a
+    /// userinfo trick whose real host is non-loopback is rejected, while a genuine
+    /// loopback URL is accepted (defense-in-depth for `open_dashboard`).
+    #[test]
+    fn open_dashboard_loopback_guard_parses_authority() {
+        // The exploit: `127.0.0.1:1` is USERINFO; the real host is `evil.com`.
+        assert!(
+            !is_loopback_http_url("http://127.0.0.1:1@evil.com/"),
+            "userinfo trick must be rejected (real host is evil.com)"
+        );
+        assert!(!is_loopback_http_url("http://localhost@evil.com/"));
+        assert!(!is_loopback_http_url("http://evil.com/"));
+        assert!(!is_loopback_http_url("http://127.0.0.1.evil.com/"));
+        // Non-http schemes are rejected (no https/file/etc).
+        assert!(!is_loopback_http_url("https://127.0.0.1:54321"));
+        assert!(!is_loopback_http_url("file:///etc/passwd"));
+
+        // Genuine loopback URLs are accepted.
+        assert!(is_loopback_http_url("http://127.0.0.1:54321"));
+        assert!(is_loopback_http_url("http://127.0.0.1:54321/"));
+        assert!(is_loopback_http_url("http://127.0.0.1:54321/path?q=1#f"));
+        assert!(is_loopback_http_url("http://localhost:9119"));
+        assert!(is_loopback_http_url("http://localhost"));
+        assert!(is_loopback_http_url("http://[::1]:8080"));
+        assert!(is_loopback_http_url("http://[::1]"));
+    }
+
     /// `export_key`'s file writer creates the key file with exactly `0600`
     /// permissions. We test the writer directly (it does not depend on the
     /// Keychain) with a parseable OpenSSH private key produced by the signer over
@@ -933,9 +995,8 @@ mod tests {
 
         let dir = std::env::temp_dir();
         let path = dir.join(format!("botbox-export-test-{}.key", std::process::id()));
-        let path_str = path.to_str().unwrap().to_string();
 
-        write_private_key_0600(&path_str, secret.expose()).unwrap();
+        crate::fs::write_0600(&path, secret.expose()).unwrap();
 
         // Permissions are exactly 0600.
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
@@ -957,13 +1018,12 @@ mod tests {
 
         let dir = std::env::temp_dir();
         let path = dir.join(format!("botbox-export-loose-{}.key", std::process::id()));
-        let path_str = path.to_str().unwrap().to_string();
 
         // Pre-create world-readable.
         std::fs::write(&path, b"old").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
 
-        write_private_key_0600(&path_str, b"BEGIN OPENSSH PRIVATE KEY").unwrap();
+        crate::fs::write_0600(&path, b"BEGIN OPENSSH PRIVATE KEY").unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
 

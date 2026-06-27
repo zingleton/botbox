@@ -33,6 +33,7 @@
 //! `Arc<dyn HostKeyDecider>`), so `Handle<ClientHandler>` is one concrete type
 //! across the handshake and live phases — no unsound handle re-keying.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -350,6 +351,12 @@ pub struct Connection {
     handle: Arc<Handle<ClientHandler>>,
     driver: tokio::task::JoinHandle<()>,
     events: Mutex<Option<mpsc::Receiver<ConnectionEvent>>>,
+    /// Set true the instant an INTENTIONAL teardown begins (operator Disconnect /
+    /// validate-before-swap). The driver checks it before emitting
+    /// [`ConnectionEvent::Lost`], so a `is_closed()` flip caused by our own
+    /// `handle.disconnect()` during `close()` is never surfaced as a phantom
+    /// `connection-lost` to the UI (Fix: clean disconnect must not look like loss).
+    closing: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for Connection {
@@ -391,26 +398,42 @@ impl Connection {
         self.events.lock().await.take()
     }
 
-    /// Clean teardown (operator Disconnect / swap): send an SSH disconnect, then
-    /// abort the driver task.
+    /// Clean teardown (operator Disconnect / swap): mark the connection
+    /// intentionally-closing FIRST (so the driver suppresses any `Lost` raised by
+    /// our own disconnect), abort the driver, then send the SSH disconnect.
+    ///
+    /// Ordering matters: setting `closing` before `disconnect()` means that even if
+    /// the driver wakes between the abort request landing and the task actually
+    /// stopping, it sees `closing == true` and does NOT emit `Lost`. The abort is
+    /// requested before the disconnect so the polling task is already being torn
+    /// down rather than racing the `is_closed()` flip.
     pub async fn close(self) {
+        self.closing.store(true, Ordering::SeqCst);
+        self.driver.abort();
         let _ = self
             .handle
             .disconnect(russh::Disconnect::ByApplication, "", "")
             .await;
-        self.driver.abort();
     }
 }
 
-/// Spawn the driver over a shared `Arc<Handle>`.
+/// Spawn the driver over a shared `Arc<Handle>`. The `closing` flag lets an
+/// intentional [`Connection::close`] suppress the `Lost` event that our own
+/// `handle.disconnect()` would otherwise trip.
 fn spawn_driver_arc(
     handle: Arc<Handle<ClientHandler>>,
+    closing: Arc<AtomicBool>,
 ) -> (tokio::task::JoinHandle<()>, mpsc::Receiver<ConnectionEvent>) {
     let (tx, rx) = mpsc::channel(4);
     let driver = tokio::spawn(async move {
         loop {
             if handle.is_closed() {
-                let _ = tx.send(ConnectionEvent::Lost).await;
+                // Only a real, unintentional transport death is a loss. If an
+                // intentional teardown set `closing`, the closure is expected —
+                // stay silent so the UI never sees a phantom `connection-lost`.
+                if !closing.load(Ordering::SeqCst) {
+                    let _ = tx.send(ConnectionEvent::Lost).await;
+                }
                 return;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -524,11 +547,13 @@ pub async fn connect(
     match auth {
         Ok(result) if result.success() => {
             let handle = Arc::new(handle);
-            let (driver, rx) = spawn_driver_arc(handle.clone());
+            let closing = Arc::new(AtomicBool::new(false));
+            let (driver, rx) = spawn_driver_arc(handle.clone(), closing.clone());
             Ok(Connection {
                 handle,
                 driver,
                 events: Mutex::new(Some(rx)),
+                closing,
             })
         }
         Ok(_failure) => Err(ConnectError::new(

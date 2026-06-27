@@ -8,7 +8,10 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { ConnectionController } from "./connection";
+import {
+  ConnectionController,
+  tunnelErrorFromRejection,
+} from "./connection";
 import { Store, reduce, initialState, type Action } from "./state";
 
 /** A fake `listen` that records handlers so a test can fire events at them. */
@@ -242,6 +245,82 @@ describe("ConnectionController (U4)", () => {
       expect(conn.tunnel?.active).toBe(false);
       expect(conn.tunnel?.error?.kind).toBe("wrong-dashboard-port");
     }
+  });
+
+  it("openTunnel classifies a plain STRING wrong-port rejection from the backend", async () => {
+    // The backend `open_tunnel` rejects with a plain string (Result<String,String>),
+    // not a structured { kind, message }. A wrong-port string must still classify
+    // as wrong-dashboard-port and keep its real message.
+    const openTunnel = vi
+      .fn()
+      .mockRejectedValue("nothing listening on port 9119");
+    const { listen } = makeListen();
+    const controller = new ConnectionController({
+      backend: {
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+        trustHost: vi.fn(),
+        removeKnownHost: vi.fn(),
+        openTunnel,
+        openDashboard: vi.fn(),
+      },
+      listen,
+      dispatch: dispatchSpy(),
+      currentBotId: () => "bot-1",
+      promptTrust: () => Promise.resolve(false),
+    });
+    store.dispatch({ type: "connected", botId: "bot-1" });
+    await controller.openTunnel();
+    const conn = store.getState().connection;
+    if (conn.phase === "connected") {
+      expect(conn.tunnel?.active).toBe(false);
+      expect(conn.tunnel?.error?.kind).toBe("wrong-dashboard-port");
+      expect(conn.tunnel?.error?.message).toBe("nothing listening on port 9119");
+    }
+  });
+
+  it("openTunnel does NOT mislabel a non-wrong-port string error as wrong-dashboard-port", async () => {
+    const openTunnel = vi.fn().mockRejectedValue("no active connection");
+    const { listen } = makeListen();
+    const controller = new ConnectionController({
+      backend: {
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+        trustHost: vi.fn(),
+        removeKnownHost: vi.fn(),
+        openTunnel,
+        openDashboard: vi.fn(),
+      },
+      listen,
+      dispatch: dispatchSpy(),
+      currentBotId: () => "bot-1",
+      promptTrust: () => Promise.resolve(false),
+    });
+    store.dispatch({ type: "connected", botId: "bot-1" });
+    await controller.openTunnel();
+    const conn = store.getState().connection;
+    if (conn.phase === "connected") {
+      expect(conn.tunnel?.error?.kind).not.toBe("wrong-dashboard-port");
+      // The real message is preserved (not the old hardcoded misclassification).
+      expect(conn.tunnel?.error?.message).toBe("no active connection");
+    }
+  });
+
+  it("tunnelErrorFromRejection: string vs structured classification", () => {
+    expect(tunnelErrorFromRejection("nothing listening on port 9119")).toEqual({
+      kind: "wrong-dashboard-port",
+      message: "nothing listening on port 9119",
+    });
+    expect(tunnelErrorFromRejection("could not bind loopback forward listener")).toMatchObject({
+      message: "could not bind loopback forward listener",
+    });
+    expect(
+      tunnelErrorFromRejection("could not bind loopback forward listener").kind,
+    ).not.toBe("wrong-dashboard-port");
+    // A structured error with an explicit kind is honoured.
+    expect(
+      tunnelErrorFromRejection({ kind: "wrong-dashboard-port", message: "x" }),
+    ).toEqual({ kind: "wrong-dashboard-port", message: "x" });
   });
 
   it("connect() dispatches begin-connect before invoking the backend", async () => {

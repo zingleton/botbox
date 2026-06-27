@@ -206,6 +206,41 @@ describe("TerminalController (U5)", () => {
     expect(host.live).toBe(false);
   });
 
+  it("discards a stale openTerminals result if the phase left connected mid-open", async () => {
+    // Defer the backend resolution so we can flip the phase while the open is in
+    // flight (the bug: the stale resolve un-freezes the panes on a dead connection
+    // and clears the "Connection lost" banner).
+    let resolveOpen!: (r: OpenTerminalsResult) => void;
+    backend.openTerminals.mockReturnValue(
+      new Promise<OpenTerminalsResult>((res) => {
+        resolveOpen = res;
+      }),
+    );
+
+    const c = make();
+    c.onConnectionState(connected("bot-1"));
+    await Promise.resolve();
+
+    // A connection-lost arrives BEFORE openTerminals resolves: banners both panes.
+    c.onConnectionState({
+      phase: "connection-lost",
+      botId: "bot-1",
+      error: { kind: "connection-lost", message: "lost" },
+    });
+    expect(host.live).toBe(false);
+    expect(host.banners.join(" ")).toMatch(/connection lost/i);
+
+    // Now the stale open resolves — it must NOT attachLive (un-freeze) the panes.
+    resolveOpen({ attachOk: true });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(host.live).toBe(false);
+    expect(attach.live).toBe(false);
+    // The connection-lost banner is still the last thing shown (not cleared).
+    expect(host.banners[host.banners.length - 1]).toMatch(/connection lost/i);
+  });
+
   it("does not re-open terminals on a repeated connected state for the same bot", async () => {
     const c = make();
     c.onConnectionState(connected("bot-1"));

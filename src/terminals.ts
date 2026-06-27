@@ -67,6 +67,11 @@ const ENCODER = new TextEncoder();
 export class TerminalController {
   private openedForBot: string | null = null;
   private opening = false;
+  /** The latest connection state the controller has seen. `openTerminals` reads
+   *  this AFTER its awaited backend call to detect that the phase moved on (a
+   *  `disconnect` / `connection-lost` arrived mid-open) and discard its stale
+   *  result rather than un-freezing the panes on a dead connection. */
+  private latest: ConnectionState = { phase: "idle" };
 
   constructor(private deps: TerminalDeps) {
     // Wire each pane's input/resize seams to the backend commands. The pane already
@@ -91,6 +96,9 @@ export class TerminalController {
    * `connected`, banners on disconnect/lost, and resets to idle otherwise.
    */
   onConnectionState(state: ConnectionState): void {
+    // Record the latest phase so an in-flight `openTerminals` can detect it has
+    // moved on after its await and discard a stale result (Fix: stale resolution).
+    this.latest = state;
     switch (state.phase) {
       case "connected":
         if (this.openedForBot !== state.botId && !this.opening) {
@@ -145,6 +153,12 @@ export class TerminalController {
         rows,
       );
 
+      // The await may have spanned a `disconnect` / `connection-lost` / switch to
+      // another bot. If the controller is no longer in `connected` for THIS bot,
+      // discard the result: applying it would un-freeze the panes (and clear the
+      // "Connection lost" banner) on a connection that is already gone (Fix).
+      if (!this.isStillConnectedTo(botId)) return;
+
       // Host shell is live (the command errored otherwise).
       host.attachLive();
 
@@ -158,6 +172,9 @@ export class TerminalController {
 
       this.openedForBot = botId;
     } catch (e) {
+      // Likewise: if the phase moved on while the open was failing, the disconnect/
+      // lost banner already applied — don't overwrite it with a host-open error.
+      if (!this.isStillConnectedTo(botId)) return;
       // Host failed to open (or no connection): both panes show the error; the
       // connection itself is handled by the connection controller.
       const msg = e instanceof Error ? e.message : String(e);
@@ -167,5 +184,13 @@ export class TerminalController {
     } finally {
       this.opening = false;
     }
+  }
+
+  /** Whether the controller is still in `connected` for `botId` — i.e. an
+   *  in-flight `openTerminals` result is not stale. */
+  private isStillConnectedTo(botId: string): boolean {
+    return (
+      this.latest.phase === "connected" && this.latest.botId === botId
+    );
   }
 }

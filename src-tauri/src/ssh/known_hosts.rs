@@ -267,38 +267,8 @@ impl KnownHostsStore for JsonKnownHostsStore {
         }
         let json = serde_json::to_vec_pretty(doc)
             .map_err(|e| KnownHostsError::Backend(format!("serialize: {e}")))?;
-        write_0600(&self.path, &json)
+        crate::fs::write_0600(&self.path, &json)
             .map_err(|e| KnownHostsError::Backend(format!("write {}: {e}", self.path.display())))
-    }
-}
-
-/// Write `bytes` to `path`, creating `0600` from the start and tightening a
-/// pre-existing looser file (mirrors `store::write_0600` / the `export_key`
-/// writer).
-fn write_0600(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)?;
-        f.write_all(bytes)?;
-        f.flush()?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-        Ok(())
-    }
-
-    #[cfg(not(unix))]
-    {
-        let mut f = std::fs::File::create(path)?;
-        f.write_all(bytes)?;
-        f.flush()?;
-        Ok(())
     }
 }
 

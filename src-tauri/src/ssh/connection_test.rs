@@ -536,3 +536,47 @@ async fn mid_session_transport_death_emits_connection_lost() {
         .expect("driver emits an event (not frozen)");
     assert_eq!(event, Some(ConnectionEvent::Lost));
 }
+
+// ── Test 9: a clean close() does NOT surface as connection-lost ─────────────
+//
+// `close()` calls `handle.disconnect()`, which flips `is_closed()` true. The
+// driver polls `is_closed()`, so without the intentional-close flag a clean
+// operator Disconnect / bot-swap could emit a phantom `Lost` BEFORE the driver is
+// aborted — surfacing `connection-lost` to the UI after the user deliberately
+// disconnected. This proves the flag suppresses that.
+#[tokio::test]
+async fn clean_close_does_not_emit_connection_lost() {
+    let server = TestServer::start().await;
+    let kh = known_hosts_trusting(&server);
+    let (tx, rx) = mpsc::channel(4);
+    let _ans = auto_answer(rx, TrustResponse::Trust);
+
+    let conn = connect(
+        &server.addr,
+        &ConnectConfig::for_user("tester"),
+        test_signer(),
+        kh,
+        tx,
+    )
+    .await
+    .expect("connects");
+
+    // Take the loss-event stream the way the command layer does, so we can observe
+    // whether the driver emits anything across an intentional teardown.
+    let mut events = conn.take_events().await.expect("events stream available");
+
+    // Intentional teardown: this must NOT produce a Lost event.
+    conn.close().await;
+
+    // Give the driver ample time to (wrongly) emit if the flag did not suppress it.
+    // The receiver should instead close cleanly (channel dropped) with no Lost.
+    match tokio::time::timeout(std::time::Duration::from_millis(500), events.recv()).await {
+        Ok(Some(ConnectionEvent::Lost)) => {
+            panic!("clean close() must not emit connection-lost (phantom loss)")
+        }
+        // `None` == the driver ended without sending (correct) — the sender dropped.
+        Ok(None) => {}
+        // Timed out with nothing sent — also correct (no phantom Lost).
+        Err(_elapsed) => {}
+    }
+}

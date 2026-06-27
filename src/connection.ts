@@ -69,6 +69,41 @@ interface TunnelStatusEvent {
   message?: string;
 }
 
+/** A backend tunnel error: the structured `{ kind, message }` from a connect-path
+ *  `tunnel-status` event, OR (for the `open_tunnel` command) a plain string
+ *  message. Classify it into a `ConnectionError` for the store. */
+export type TunnelRejection =
+  | { kind?: ConnectionErrorKind; message?: string }
+  | string;
+
+/**
+ * Turn an `open_tunnel` rejection into a `ConnectionError`. The command rejects
+ * with a plain string (`Result<String, String>`), so there is no `kind` to read
+ * (unlike the connect-path `tunnel-status` event, which carries a precise
+ * `errorKind`). We only label it `wrong-dashboard-port` when the message is the
+ * backend's "nothing listening on port" wrong-port signal; any other failure
+ * (e.g. binding the loopback listener) is a generic tunnel error — we don't
+ * fabricate a wrong-port classification it isn't.
+ */
+export function tunnelErrorFromRejection(e: unknown): {
+  kind: ConnectionErrorKind;
+  message: string;
+} {
+  // A structured error (shouldn't happen for `open_tunnel`, but be defensive):
+  // honour an explicit kind.
+  if (e !== null && typeof e === "object") {
+    const err = e as { kind?: ConnectionErrorKind; message?: string };
+    if (err.kind !== undefined) {
+      return { kind: err.kind, message: err.message ?? String(e) };
+    }
+  }
+  const message = typeof e === "string" ? e : String(e);
+  const kind: ConnectionErrorKind = /nothing listening on port/i.test(message)
+    ? "wrong-dashboard-port"
+    : "connection-lost";
+  return { kind, message };
+}
+
 export interface ConnectionDeps {
   backend: ConnectionBackend;
   listen: EventListen;
@@ -196,14 +231,17 @@ export class ConnectionController {
     try {
       await this.deps.backend.openTunnel();
     } catch (e) {
-      const err = e as { kind?: ConnectionErrorKind; message?: string };
+      // The backend `open_tunnel` command rejects with a PLAIN STRING message
+      // (`Result<String, String>`), not the structured `{ kind, message }` shape
+      // the connect-path tunnel error carries. Reading `e.kind`/`e.message` off a
+      // string yields undefined, so the old code always mislabelled every failure
+      // (e.g. a bind error) as `wrong-dashboard-port`. Treat a string as the
+      // message and only classify it `wrong-dashboard-port` when it actually looks
+      // like one; otherwise surface a generic tunnel error.
       this.deps.dispatch({
         type: "tunnel-status",
         active: false,
-        error: {
-          kind: err.kind ?? "wrong-dashboard-port",
-          message: err.message ?? String(e),
-        },
+        error: tunnelErrorFromRejection(e),
       });
     }
   }
