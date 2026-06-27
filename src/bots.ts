@@ -321,6 +321,42 @@ export function renderBotForm(
   container.appendChild(wrap);
 }
 
+/**
+ * Render the add/edit form, preserving the focused field and caret across the
+ * rebuild. The controller re-renders the whole form on every keystroke (to
+ * reflect state / clear inline errors), and `renderBotForm` replaces all the
+ * `<input>` elements — so without this, focus is lost after the first character
+ * and the field becomes un-typeable. We snapshot the active field's `data-testid`
+ * and caret offset, rebuild, then restore focus + caret to the same field.
+ */
+export function renderBotFormPreservingFocus(
+  container: HTMLElement,
+  form: BotFormState | null,
+  handlers: BotFormHandlers,
+): void {
+  const active = container.ownerDocument.activeElement;
+  const activeId = active?.getAttribute("data-testid") ?? null;
+  const caret =
+    active instanceof HTMLInputElement ? active.selectionStart : null;
+
+  renderBotForm(container, form, handlers);
+
+  if (!activeId) return;
+  const next = container.querySelector<HTMLInputElement>(
+    `[data-testid="${activeId}"]`,
+  );
+  if (!next) return;
+  next.focus();
+  if (caret != null) {
+    // Restore the caret. Guarded: some input types reject setSelectionRange.
+    try {
+      next.setSelectionRange(caret, caret);
+    } catch {
+      /* element doesn't support text-range selection */
+    }
+  }
+}
+
 function field(
   label: string,
   testid: string,

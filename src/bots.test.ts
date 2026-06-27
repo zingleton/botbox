@@ -16,6 +16,7 @@ import {
 import {
   renderBotList,
   renderBotForm,
+  renderBotFormPreservingFocus,
   emptyForm,
   BotsController,
   type BotBackend,
@@ -338,5 +339,53 @@ describe("BotsController", () => {
     await controller.select("a");
     await flush();
     expect(confirmCalls.length).toBe(0);
+  });
+});
+
+describe("renderBotFormPreservingFocus (focus retention across re-render)", () => {
+  const noopHandlers = { onField: () => {}, onSubmit: () => {}, onCancel: () => {} };
+
+  it("keeps focus and caret on the active field when the form re-renders", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+
+    renderBotFormPreservingFocus(container, emptyForm(null), noopHandlers);
+    const name = container.querySelector<HTMLInputElement>(
+      '[data-testid="bot-name"]',
+    )!;
+    name.focus();
+    // Simulate the user having typed "H": the DOM value + caret are ahead of the
+    // re-render that the controller triggers from onField.
+    name.value = "H";
+    name.setSelectionRange(1, 1);
+
+    // The controller rebuilds the whole form on the keystroke.
+    renderBotFormPreservingFocus(
+      container,
+      { ...emptyForm(null), name: "H" },
+      noopHandlers,
+    );
+
+    const rebuilt = container.querySelector<HTMLInputElement>(
+      '[data-testid="bot-name"]',
+    )!;
+    expect(document.activeElement).toBe(rebuilt);
+    expect(rebuilt.value).toBe("H");
+    expect(rebuilt.selectionStart).toBe(1);
+  });
+
+  it("does not steal focus when focus is outside the form", () => {
+    const outside = document.createElement("button");
+    outside.setAttribute("data-testid", "outside-btn");
+    document.body.appendChild(outside);
+    outside.focus();
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    renderBotFormPreservingFocus(container, emptyForm(null), noopHandlers);
+
+    // The form rendered, but focus stayed on the outside element.
+    expect(container.querySelector('[data-testid="bot-name"]')).not.toBeNull();
+    expect(document.activeElement).toBe(outside);
   });
 });

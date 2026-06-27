@@ -38,7 +38,7 @@ import {
 import {
   BotsController,
   renderBotList,
-  renderBotForm,
+  renderBotFormPreservingFocus,
   type BotInput,
   type BotFormState,
 } from "./bots";
@@ -217,7 +217,7 @@ async function exportPrivateKey(): Promise<void> {
 }
 
 function renderForm(form: BotFormState | null): void {
-  renderBotForm(el("bot-form-region"), form, bots.formHandlers());
+  renderBotFormPreservingFocus(el("bot-form-region"), form, bots.formHandlers());
 }
 
 function render(state: AppState): void {
@@ -234,7 +234,9 @@ function render(state: AppState): void {
     // wired to the controller for select/add/edit/remove/disconnect.
     renderBotList(el("bot-list-region"), state, bots.listHandlers());
   }
-  renderStatusBar(el("status-bar"), state);
+  renderStatusBar(el("status-bar"), state, {
+    onConnect: (botId) => void connection.connect(botId),
+  });
   renderErrorSurface(el("error-region"), state, errorContext(state), {
     onRetry: () => void retryConnect(),
     onRemoveSavedKey: (host) => void removeSavedKeyAndClear(host),

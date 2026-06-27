@@ -307,7 +307,17 @@ export function renderTunnelBar(
   }
 }
 
-export function renderStatusBar(bar: HTMLElement, state: AppState): void {
+/** Handlers for the status bar's primary connect affordance. */
+export interface StatusBarHandlers {
+  /** Start a connect to the given (currently-selected) bot. */
+  onConnect: (botId: string) => void;
+}
+
+export function renderStatusBar(
+  bar: HTMLElement,
+  state: AppState,
+  handlers?: StatusBarHandlers,
+): void {
   bar.replaceChildren();
   bar.dataset.phase = state.connection.phase;
 
@@ -334,6 +344,28 @@ export function renderStatusBar(bar: HTMLElement, state: AppState): void {
       break;
   }
   bar.appendChild(label);
+
+  // Primary connect affordance. A selected bot in the idle/disconnected phase is
+  // the only state from which the user starts (or restarts) a connection — the
+  // `connecting` phase shows progress and the `connected` phase exposes
+  // Disconnect on the bot item. Without this button there is no way to initiate
+  // the first connect from the UI.
+  if (
+    handlers &&
+    state.selectedBotId &&
+    (state.connection.phase === "idle" ||
+      state.connection.phase === "disconnected")
+  ) {
+    const botId = state.selectedBotId;
+    const connect = button(
+      "Connect",
+      "status-connect",
+      () => handlers.onConnect(botId),
+      { primary: true },
+    );
+    connect.classList.add("status-bar__connect");
+    bar.appendChild(connect);
+  }
 
   if (state.lastError) {
     const err = document.createElement("span");

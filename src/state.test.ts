@@ -203,6 +203,38 @@ describe("first-run rendering (idle empty state)", () => {
     expect(statusBar.dataset.phase).toBe("connection-lost");
     expect(statusBar.textContent).toContain("transport closed");
   });
+
+  it("offers a Connect button when a bot is selected and idle, wired to onConnect", () => {
+    let s = reduce(initialState(), { type: "set-bots", bots: [sampleBot] });
+    s = reduce(s, { type: "select-bot", botId: sampleBot.id });
+
+    let connectedId: string | null = null;
+    renderStatusBar(statusBar, s, { onConnect: (id) => (connectedId = id) });
+
+    const btn = statusBar.querySelector<HTMLButtonElement>(
+      '[data-action="status-connect"]',
+    );
+    expect(btn).not.toBeNull();
+    btn!.click();
+    expect(connectedId).toBe(sampleBot.id);
+  });
+
+  it("offers no Connect button when no bot is selected", () => {
+    renderStatusBar(statusBar, initialState(), { onConnect: () => {} });
+    expect(
+      statusBar.querySelector('[data-action="status-connect"]'),
+    ).toBeNull();
+  });
+
+  it("offers no Connect button while connecting", () => {
+    let s = reduce(initialState(), { type: "set-bots", bots: [sampleBot] });
+    s = reduce(s, { type: "select-bot", botId: sampleBot.id });
+    s = reduce(s, { type: "begin-connect", botId: sampleBot.id });
+    renderStatusBar(statusBar, s, { onConnect: () => {} });
+    expect(
+      statusBar.querySelector('[data-action="status-connect"]'),
+    ).toBeNull();
+  });
 });
 
 describe("dashboard tunnel bar (U6)", () => {

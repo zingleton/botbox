@@ -345,6 +345,11 @@ body {
   color: var(--danger);
 }
 
+/* Push the primary Connect affordance to the trailing edge of the status bar. */
+.status-bar__connect {
+  margin-left: auto;
+}
+
 /* Dashboard tunnel bar (U6 / R12, R13). Hidden until connected. */
 .tunnel-bar {
   display: flex;
