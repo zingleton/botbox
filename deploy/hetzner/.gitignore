@@ -1,0 +1,4 @@
+# Secrets and per-deploy state — never commit these.
+.env
+.state
+.known_hosts

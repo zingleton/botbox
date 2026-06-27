@@ -1,0 +1,26 @@
+#cloud-config
+# Base provisioning for the Hermes test bot. The heavy Hermes install runs
+# afterwards over SSH (see bootstrap.sh) so it stays debuggable and the
+# OpenRouter key never lands in Hetzner's cloud-metadata service.
+#
+# __SSH_PUBLIC_KEY__ is substituted by provision.sh before upload.
+package_update: true
+package_upgrade: false
+packages:
+  - git
+  - curl
+  - tmux
+  - ca-certificates
+  - build-essential
+  - ripgrep
+  - ffmpeg
+  - python3
+  - python3-venv
+users:
+  - default
+  - name: hermes
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: 'ALL=(ALL) NOPASSWD:ALL'
+    ssh_authorized_keys:
+      - __SSH_PUBLIC_KEY__
