@@ -10,7 +10,13 @@
  * store — the caller (main.ts) decides what to dispatch.
  */
 
-import { isFirstRun, type AppState, type Bot } from "./state";
+import {
+  isFirstRun,
+  type AppState,
+  type Bot,
+  type ConnectionError,
+  type ConnectionErrorKind,
+} from "./state";
 
 // ── SSH key surface (U2 / R2, R17) ──────────────────────────────────────────
 
@@ -336,4 +342,459 @@ export function renderStatusBar(bar: HTMLElement, state: AppState): void {
     err.textContent = state.lastError.message;
     bar.appendChild(err);
   }
+}
+
+// ── Error-class surfaces (U7 / R11, R2, R16) ────────────────────────────────
+//
+// Every error class the connect pipeline (KTD6) emits maps here to a *distinct,
+// actionable* surface — never collapsing into one generic banner. The surface
+// reads from two sources:
+//   - the `ConnectionError` (kind + message), and
+//   - an `ErrorContext` the caller (main.ts) assembles: the host (for retry /
+//     remove-saved-key targeting), the operator's public key (the provisioning
+//     surface for `remote-auth-failure` / R2), and the parsed saved-vs-presented
+//     fingerprints for a `host-key-mismatch` (R16).
+//
+// Keeping the context an explicit argument (rather than growing the KTD9 union)
+// matches render.ts's "pure view, caller owns the data" convention: the surface
+// stays trivially testable in jsdom.
+
+/**
+ * Context the error surface needs beyond the `ConnectionError` itself. The caller
+ * fills what it has; each field is optional so the surface degrades gracefully.
+ */
+export interface ErrorContext {
+  /** The bot/host the failed connect targeted (retry + remove-saved-key need it). */
+  host: string | null;
+  /** The operator's OpenSSH public key, for the provisioning surface (R2). */
+  publicKey: string | null;
+  /** Saved vs presented SHA-256 fingerprints for a mismatch (R16). */
+  mismatch?: { saved: string; presented: string } | null;
+}
+
+export interface ErrorSurfaceHandlers {
+  /** Retry the connect to the selected bot (unreachable / generic). */
+  onRetry: () => void;
+  /** Remove the saved host key for `host`, then allow a re-connect (R16). */
+  onRemoveSavedKey: (host: string) => void;
+  /** Copy the operator's public key to the clipboard (provisioning / R2). */
+  onCopyPublicKey: () => void;
+  /** Reconnect after a mid-session loss (connection-lost). */
+  onReconnect: () => void;
+  /** Dismiss the surface (clears `lastError`). */
+  onDismiss: () => void;
+}
+
+/**
+ * Parse the saved/presented fingerprints out of a host-key-mismatch message.
+ * The backend formats it as `host key changed: saved <fp>, presented <fp>`
+ * (see `ssh::connection::classify_handshake_failure`). Returns `null` if the
+ * message does not match, so the surface can fall back to the raw message.
+ */
+export function parseMismatchFingerprints(
+  message: string,
+): { saved: string; presented: string } | null {
+  const m = /saved\s+(\S+),\s*presented\s+(\S+)/.exec(message);
+  if (!m) return null;
+  return { saved: m[1], presented: m[2] };
+}
+
+/**
+ * Short, human title for each error class (Bricolage display, per the design
+ * system). Distinct per class so the operator immediately knows what failed.
+ */
+function errorTitle(kind: ConnectionErrorKind): string {
+  switch (kind) {
+    case "unreachable-host":
+      return "Can't reach the bot";
+    case "untrusted-host-key":
+      return "Unrecognized host key";
+    case "host-key-mismatch":
+      return "Host key changed";
+    case "remote-auth-failure":
+      return "The bot rejected your key";
+    case "local-signer-failure":
+      return "Couldn't use your SSH key";
+    case "wrong-dashboard-port":
+      return "Dashboard port unavailable";
+    case "attach-failure":
+      return "Hermes attach failed";
+    case "connection-lost":
+      return "Connection lost";
+  }
+}
+
+/**
+ * Render the error surface for the app's surfaced error (`state.lastError`) or
+ * the `connection-lost` phase, mapping each `ConnectionErrorKind` to its own
+ * distinct, actionable body. Renders nothing when there is no error to show.
+ *
+ * The single most important distinction (KTD6 / AE3): `remote-auth-failure`
+ * shows the **provisioning surface** (public key + copy → add to the bot), while
+ * `local-signer-failure` shows **Keychain/unlock guidance** and never the
+ * provisioning flow — the operator with a correct key is not told to re-paste it.
+ */
+export function renderErrorSurface(
+  region: HTMLElement,
+  state: AppState,
+  context: ErrorContext,
+  handlers: ErrorSurfaceHandlers,
+): void {
+  region.replaceChildren();
+
+  // The connection-lost phase carries its own error; otherwise use `lastError`.
+  // (connection-lost is a live phase with terminals locked by U5; the surface
+  // here adds the reconnect CTA.)
+  const error: ConnectionError | null =
+    state.connection.phase === "connection-lost"
+      ? state.connection.error
+      : state.lastError;
+
+  if (!error) {
+    region.dataset.error = "none";
+    region.removeAttribute("data-testid");
+    return;
+  }
+
+  region.dataset.error = error.kind;
+
+  const card = document.createElement("div");
+  card.className = "error-surface error-surface--" + error.kind;
+  card.setAttribute("role", "alert");
+  card.setAttribute("data-testid", "error-surface");
+  card.setAttribute("data-error-kind", error.kind);
+
+  const title = document.createElement("h3");
+  title.className = "error-surface__title";
+  title.textContent = errorTitle(error.kind);
+  card.appendChild(title);
+
+  // Per-class body + actions.
+  switch (error.kind) {
+    case "unreachable-host":
+      appendUnreachable(card, context, handlers);
+      break;
+    case "host-key-mismatch":
+      appendMismatch(card, error, context, handlers);
+      break;
+    case "remote-auth-failure":
+      appendProvisioning(card, context, handlers);
+      break;
+    case "local-signer-failure":
+      appendSignerFailure(card, error, handlers);
+      break;
+    case "wrong-dashboard-port":
+      appendWrongPort(card, error, handlers);
+      break;
+    case "connection-lost":
+      appendConnectionLost(card, error, handlers);
+      break;
+    case "untrusted-host-key":
+    case "attach-failure":
+    default:
+      appendGeneric(card, error, handlers);
+      break;
+  }
+
+  region.appendChild(card);
+}
+
+function appendBody(card: HTMLElement, text: string): void {
+  const p = document.createElement("p");
+  p.className = "error-surface__body";
+  p.textContent = text;
+  card.appendChild(p);
+}
+
+function appendActions(card: HTMLElement): HTMLElement {
+  const actions = document.createElement("div");
+  actions.className = "error-surface__actions";
+  card.appendChild(actions);
+  return actions;
+}
+
+function appendUnreachable(
+  card: HTMLElement,
+  context: ErrorContext,
+  handlers: ErrorSurfaceHandlers,
+): void {
+  const where = context.host ? ` (${context.host})` : "";
+  appendBody(
+    card,
+    `Botbox couldn't open a connection to the bot${where}. Check the IP is ` +
+      "correct and that the bot is powered on and reachable, then retry.",
+  );
+  const actions = appendActions(card);
+  actions.append(
+    button("Retry", "error-retry", handlers.onRetry, { primary: true }),
+    button("Dismiss", "error-dismiss", handlers.onDismiss),
+  );
+}
+
+function appendMismatch(
+  card: HTMLElement,
+  error: ConnectionError,
+  context: ErrorContext,
+  handlers: ErrorSurfaceHandlers,
+): void {
+  appendBody(
+    card,
+    "The host key presented by this bot does NOT match the key Botbox saved " +
+      "the first time you connected. This can mean the bot was rebuilt — or " +
+      "that someone is impersonating it. Botbox will not connect until you " +
+      "explicitly remove the saved key.",
+  );
+
+  const fp =
+    context.mismatch ?? parseMismatchFingerprints(error.message);
+  const grid = document.createElement("dl");
+  grid.className = "error-surface__fingerprints";
+  fingerprintRow(grid, "Saved", fp?.saved ?? "(unknown)", "saved");
+  fingerprintRow(grid, "Presented", fp?.presented ?? "(unknown)", "presented");
+  card.appendChild(grid);
+
+  const actions = appendActions(card);
+  const remove = button(
+    "Remove saved key for this host",
+    "error-remove-known-host",
+    () => {
+      if (context.host) handlers.onRemoveSavedKey(context.host);
+    },
+    { danger: true },
+  );
+  // No host → nothing to remove; keep the button visible but inert.
+  remove.disabled = !context.host;
+  actions.append(remove, button("Dismiss", "error-dismiss", handlers.onDismiss));
+}
+
+function fingerprintRow(
+  grid: HTMLElement,
+  label: string,
+  value: string,
+  which: string,
+): void {
+  const dt = document.createElement("dt");
+  dt.className = "error-surface__fp-label";
+  dt.textContent = label;
+  const dd = document.createElement("dd");
+  dd.className = "error-surface__fp-value";
+  dd.setAttribute("data-fingerprint", which);
+  dd.textContent = value;
+  grid.append(dt, dd);
+}
+
+function appendProvisioning(
+  card: HTMLElement,
+  context: ErrorContext,
+  handlers: ErrorSurfaceHandlers,
+): void {
+  appendBody(
+    card,
+    "The bot rejected your SSH key. Add the public key below to the bot's " +
+      "~/.ssh/authorized_keys (one line), then retry. This is your key — it " +
+      "does not need regenerating.",
+  );
+
+  const value = document.createElement("code");
+  value.className = "error-surface__pubkey";
+  value.setAttribute("data-testid", "provision-public-key");
+  if (context.publicKey) {
+    value.textContent = context.publicKey;
+    value.title = context.publicKey;
+  } else {
+    value.textContent =
+      "No SSH key yet — generate one from the SSH key panel first.";
+    value.dataset.empty = "true";
+  }
+  card.appendChild(value);
+
+  const actions = appendActions(card);
+  const copy = button(
+    "Copy public key",
+    "error-copy-public-key",
+    handlers.onCopyPublicKey,
+    { primary: true },
+  );
+  copy.disabled = !context.publicKey;
+  actions.append(
+    copy,
+    button("Retry", "error-retry", handlers.onRetry),
+    button("Dismiss", "error-dismiss", handlers.onDismiss),
+  );
+}
+
+function appendSignerFailure(
+  card: HTMLElement,
+  error: ConnectionError,
+  handlers: ErrorSurfaceHandlers,
+): void {
+  // DISTINCT from remote-auth-failure (R11 / KTD6): this is a *local* problem —
+  // the Keychain is locked or an OS prompt was cancelled — so we give unlock
+  // guidance and NEVER the provisioning / re-paste-your-key flow.
+  appendBody(
+    card,
+    "Botbox couldn't use your private key to authenticate. This is a local " +
+      "Keychain problem, not a problem with the bot. Unlock your macOS " +
+      "Keychain (or approve the access prompt), then retry. Your key is fine " +
+      "— there's no need to re-add it to the bot.",
+  );
+  if (error.message) {
+    const detail = document.createElement("p");
+    detail.className = "error-surface__detail";
+    detail.textContent = error.message;
+    card.appendChild(detail);
+  }
+  const actions = appendActions(card);
+  actions.append(
+    button("Retry", "error-retry", handlers.onRetry, { primary: true }),
+    button("Dismiss", "error-dismiss", handlers.onDismiss),
+  );
+}
+
+function appendWrongPort(
+  card: HTMLElement,
+  error: ConnectionError,
+  handlers: ErrorSurfaceHandlers,
+): void {
+  appendBody(
+    card,
+    error.message ||
+      "Nothing is listening on the bot's configured dashboard port. The bot " +
+        "is connected, but its dashboard may not be running yet. Retry once " +
+        "it's up, or edit the bot's dashboard port.",
+  );
+  const actions = appendActions(card);
+  actions.append(
+    button("Retry", "error-retry", handlers.onRetry, { primary: true }),
+    button("Dismiss", "error-dismiss", handlers.onDismiss),
+  );
+}
+
+function appendConnectionLost(
+  card: HTMLElement,
+  error: ConnectionError,
+  handlers: ErrorSurfaceHandlers,
+): void {
+  appendBody(
+    card,
+    "The connection to the bot dropped. The terminals are frozen until you " +
+      "reconnect. Your saved bot and key are unchanged — reconnect to resume.",
+  );
+  if (error.message) {
+    const detail = document.createElement("p");
+    detail.className = "error-surface__detail";
+    detail.textContent = error.message;
+    card.appendChild(detail);
+  }
+  const actions = appendActions(card);
+  actions.append(
+    button("Reconnect", "error-reconnect", handlers.onReconnect, {
+      primary: true,
+    }),
+  );
+}
+
+function appendGeneric(
+  card: HTMLElement,
+  error: ConnectionError,
+  handlers: ErrorSurfaceHandlers,
+): void {
+  appendBody(card, error.message || "The connection attempt failed.");
+  const actions = appendActions(card);
+  actions.append(
+    button("Retry", "error-retry", handlers.onRetry, { primary: true }),
+    button("Dismiss", "error-dismiss", handlers.onDismiss),
+  );
+}
+
+// ── First-contact host-key trust modal (U7 / KTD5, R16) ─────────────────────
+//
+// Replaces the U4 `window.confirm` placeholder. This is the TOFU prompt the
+// operator sees on first contact with an unknown host: it shows the SHA-256
+// fingerprint (mono) and resolves Trust/Reject. The caller (main.ts) wires the
+// resolution to the backend `trust_host` command via the connection controller.
+//
+// Pure + framework-free: `showTrustModal` mounts a modal into `mount`, returns a
+// Promise<boolean> that resolves true on Trust / false on Reject, and removes
+// the modal on resolution. Designed so a test can mount it into a jsdom node and
+// click the buttons.
+
+export interface TrustModalRequest {
+  host: string;
+  /** SHA-256 fingerprint string (`SHA256:...`). */
+  fingerprint: string;
+}
+
+/**
+ * Mount the host-key trust modal and resolve the operator's Trust/Reject choice.
+ * Trust → `true`, Reject (or clicking the backdrop / pressing Escape) → `false`.
+ * The modal element is removed from the DOM once the choice is made.
+ */
+export function showTrustModal(
+  mount: HTMLElement,
+  request: TrustModalRequest,
+): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.setAttribute("data-testid", "trust-modal");
+
+    const dialog = document.createElement("div");
+    dialog.className = "modal";
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+
+    const title = document.createElement("h2");
+    title.className = "modal__title";
+    title.textContent = "Trust this bot's host key?";
+
+    const body = document.createElement("p");
+    body.className = "modal__body";
+    body.textContent =
+      `This is the first time Botbox has connected to ${request.host}. ` +
+      "Confirm the SHA-256 fingerprint below matches the bot you set up. " +
+      "Only trust it if it matches — accepting an unknown key could expose " +
+      "you to a machine-in-the-middle.";
+
+    const label = document.createElement("div");
+    label.className = "modal__label";
+    label.textContent = "SHA-256 fingerprint";
+
+    const fingerprint = document.createElement("code");
+    fingerprint.className = "modal__fingerprint";
+    fingerprint.setAttribute("data-testid", "trust-fingerprint");
+    fingerprint.textContent = request.fingerprint;
+
+    const actions = document.createElement("div");
+    actions.className = "modal__actions";
+
+    let settled = false;
+    const finish = (trust: boolean) => {
+      if (settled) return;
+      settled = true;
+      overlay.remove();
+      resolve(trust);
+    };
+
+    const trustBtn = button("Trust", "trust-accept", () => finish(true), {
+      primary: true,
+    });
+    const rejectBtn = button("Reject", "trust-reject", () => finish(false), {
+      danger: true,
+    });
+    actions.append(rejectBtn, trustBtn);
+
+    // Backdrop click / Escape both reject (fail-closed; KTD5).
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) finish(false);
+    });
+    overlay.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") finish(false);
+    });
+
+    dialog.append(title, body, label, fingerprint, actions);
+    overlay.appendChild(dialog);
+    mount.appendChild(overlay);
+    trustBtn.focus();
+  });
 }

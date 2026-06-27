@@ -35,6 +35,13 @@
       <main class="workspace" id="workspace">
         <section class="status-bar" id="status-bar"></section>
         <!--
+          Error-class surface (U7 / R11, R2, R16): each failure class
+          (unreachable, mismatch, provisioning, signer, wrong-port,
+          connection-lost) renders its own distinct, actionable card here.
+          Empty until an error is surfaced.
+        -->
+        <section class="error-region" id="error-region"></section>
+        <!--
           Dashboard tunnel status (U6 / R12, R13): active/inactive badge, the
           copyable loopback URL, and an explicit "Open Dashboard" button.
           Rendered by main.ts from the connected sub-state; empty until connected.
@@ -52,6 +59,11 @@
         </section>
       </main>
     </div>
+    <!--
+      Modal mount point (U7 / KTD5): the first-contact host-key trust modal
+      mounts here, above the app shell. Empty until a host-key prompt arrives.
+    -->
+    <div id="modal-region"></div>
     <script type="module" src="/main.ts"></script>
   </body>
 </html>

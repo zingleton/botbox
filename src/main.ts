@@ -30,7 +30,10 @@ import {
   renderStatusBar,
   renderKeyPanel,
   renderTunnelBar,
+  renderErrorSurface,
+  showTrustModal,
   type KeyViewState,
+  type ErrorContext,
 } from "./render";
 import {
   BotsController,
@@ -90,13 +93,11 @@ const connection = new ConnectionController({
     listen(event, (e) => handler(e.payload as never)),
   dispatch: (action) => store.dispatch(action),
   currentBotId: () => store.getState().selectedBotId,
+  // U7: the real first-contact TOFU modal (replaces U4's window.confirm). Mounts
+  // the fingerprint Trust/Reject modal and resolves the operator's choice; the
+  // controller then routes it to the backend `trust_host` command.
   promptTrust: (fingerprint, host) =>
-    Promise.resolve(
-      window.confirm(
-        `Trust the host key for ${host}?\n\nSHA-256 fingerprint:\n${fingerprint}\n\n` +
-          "Only accept this if the fingerprint matches the bot you set up.",
-      ),
-    ),
+    showTrustModal(el("modal-region"), { host, fingerprint }),
 });
 
 // Terminals are created once and re-used across state changes.
@@ -232,6 +233,13 @@ function render(state: AppState): void {
     renderBotList(el("bot-list-region"), state, bots.listHandlers());
   }
   renderStatusBar(el("status-bar"), state);
+  renderErrorSurface(el("error-region"), state, errorContext(state), {
+    onRetry: () => void retryConnect(),
+    onRemoveSavedKey: (host) => void removeSavedKeyAndClear(host),
+    onCopyPublicKey: () => void copyPublicKey(),
+    onReconnect: () => void retryConnect(),
+    onDismiss: () => store.dispatch({ type: "clear-error" }),
+  });
   renderTunnelBar(el("tunnel-region"), state, {
     onCopyUrl: copyTunnelUrl,
     onOpenDashboard: (url) => {
@@ -242,6 +250,48 @@ function render(state: AppState): void {
     },
   });
   renderTerminals(state);
+}
+
+/**
+ * Assemble the context the error surface needs beyond the `ConnectionError`
+ * (U7). The host is taken from the bot the failure was *about* (the active
+ * connection's bot when one exists, else the selected bot) so retry and
+ * remove-saved-key target the right host; the public key comes from the
+ * always-available key surface (the provisioning surface / R2); the mismatch
+ * fingerprints are parsed from the error message by the render helper.
+ */
+function errorContext(state: AppState): ErrorContext {
+  const errorBotId =
+    state.connection.phase === "connection-lost"
+      ? state.connection.botId
+      : state.selectedBotId;
+  const bot = state.bots.find((b) => b.id === errorBotId) ?? null;
+  return {
+    host: bot?.host ?? null,
+    publicKey: keyView.publicKey,
+    mismatch: null,
+  };
+}
+
+/** Retry / reconnect to the selected bot (U7 unreachable-retry + connection-lost
+ *  reconnect). Clears the surfaced error first, then re-runs the connect. */
+async function retryConnect(): Promise<void> {
+  const botId = store.getState().selectedBotId;
+  if (!botId) return;
+  store.dispatch({ type: "clear-error" });
+  await connection.connect(botId);
+}
+
+/** Mismatch recovery (U7 / R16): remove the saved host key, then clear the error
+ *  so the operator can reconnect (which re-prompts for the new key via TOFU). We
+ *  never silently re-trust — removal is the explicit step before any re-connect. */
+async function removeSavedKeyAndClear(host: string): Promise<void> {
+  try {
+    await connection.removeKnownHost(host);
+    store.dispatch({ type: "clear-error" });
+  } catch (e) {
+    console.warn("remove_known_host failed", e);
+  }
 }
 
 /** Copy the loopback dashboard URL to the clipboard (U6). A clipboard failure is
