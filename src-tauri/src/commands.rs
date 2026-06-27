@@ -591,14 +591,14 @@ async fn establish_dashboard_tunnel(app: &tauri::AppHandle, state: &SshState, bo
                 TunnelStatusPayload {
                     bot_id: bot.id.clone(),
                     active: true,
-                    url: Some(url.clone()),
+                    url: Some(url),
                     error_kind: None,
                     message: None,
                 },
             );
-            // Open the browser only now that the listener is bound AND the
-            // connection is authenticated (KTD7 / R13).
-            open_url_via_opener(app, &url);
+            // The tunnel is bound and the Dashboard context link is now enabled;
+            // the operator opens the dashboard explicitly via that link (R13). We
+            // no longer auto-open the browser on connect (single-panel re-layout).
         }
         Err(e) => {
             // Binding the loopback listener failed (rare). Surface as an inactive
@@ -623,16 +623,6 @@ async fn establish_dashboard_tunnel(app: &tauri::AppHandle, state: &SshState, bo
 /// bot's public IP from inside the SSH session.
 fn forward_dashboard_host(_bot_host: &str) -> String {
     "127.0.0.1".to_string()
-}
-
-/// Open `url` in the default browser via the scoped `opener` plugin (R13). The
-/// capability allowlist scopes `open_url` to loopback, so only the dashboard URL is
-/// openable. Best-effort: a failure is logged, not surfaced as a connect error.
-fn open_url_via_opener(app: &tauri::AppHandle, url: &str) {
-    use tauri_plugin_opener::OpenerExt;
-    if let Err(e) = app.opener().open_url(url.to_string(), None::<String>) {
-        eprintln!("botbox: could not open dashboard URL {url}: {e}");
-    }
 }
 
 /// (Re-)establish the dashboard tunnel for the active connection on demand (U6).

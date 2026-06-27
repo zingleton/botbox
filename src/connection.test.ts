@@ -173,15 +173,24 @@ describe("ConnectionController (U4)", () => {
     await controller.bind();
     store.dispatch({ type: "connected", botId: "bot-1" });
 
+    // A successful event as Tauri actually serializes it: Rust `None` becomes
+    // JSON `null`, so errorKind/message arrive as null — must NOT fabricate an
+    // error (regression: that surfaced a bogus "Dashboard port unavailable").
     fire("tunnel-status", {
       botId: "bot-1",
       active: true,
       url: "http://127.0.0.1:7777",
+      errorKind: null,
+      message: null,
     });
-    expect(store.getState().connection).toMatchObject({
+    const ok = store.getState().connection;
+    expect(ok).toMatchObject({
       phase: "connected",
       tunnel: { active: true, url: "http://127.0.0.1:7777" },
     });
+    if (ok.phase === "connected") {
+      expect(ok.tunnel?.error).toBeUndefined();
+    }
 
     fire("tunnel-status", {
       botId: "bot-1",

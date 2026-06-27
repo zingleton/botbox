@@ -184,8 +184,11 @@ export class ConnectionController {
           type: "tunnel-status",
           active: p.active,
           url: p.url,
+          // Tauri serializes Rust `Option::None` as JSON `null`, so a successful
+          // (no-error) event arrives with `errorKind: null` — `!= null` catches
+          // both null and undefined and avoids fabricating a bogus empty error.
           error:
-            p.errorKind !== undefined
+            p.errorKind != null
               ? { kind: p.errorKind, message: p.message ?? "" }
               : undefined,
         });

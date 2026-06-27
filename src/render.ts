@@ -359,8 +359,13 @@ export function renderSelectedBotLine(
 
   // Surface a dashboard-tunnel error (e.g. wrong dashboard port) inline next to
   // the disabled Dashboard link, so the error class still reaches the operator
-  // now that the dedicated tunnel bar is gone.
-  if (state.connection.phase === "connected" && state.connection.tunnel?.error) {
+  // now that the dedicated tunnel bar is gone. Only when the tunnel is actually
+  // down — an active tunnel never shows an error even if a stale one lingers.
+  if (
+    state.connection.phase === "connected" &&
+    !state.connection.tunnel?.active &&
+    state.connection.tunnel?.error
+  ) {
     const err = document.createElement("span");
     err.className = "selected-bot__tunnel-error";
     err.setAttribute("data-testid", "tunnel-error");
