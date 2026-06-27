@@ -40,10 +40,13 @@
   "plugins": {},
   "bundle": {
     "active": true,
-    "targets": "dmg",
+    "targets": ["app", "dmg"],
     "category": "DeveloperTool",
-    "shortDescription": "Embedded-SSH client for remote Hermes bots",
-    "longDescription": "Botbox is a Tauri 2 macOS app that connects to remote Hermes bots over an embedded SSH client, multiplexing a host shell, a Hermes-attach terminal, and a dashboard port-forward over a single connection.",
+    "copyright": "Copyright © 2026 AI Power Guild. MIT-licensed.",
+    "publisher": "AI Power Guild",
+    "homepage": "https://github.com/aipowerguild/botbox",
+    "shortDescription": "Companion desktop SSH client for AI Power Guild / Hermes bots",
+    "longDescription": "Botbox is a Tauri 2 macOS app that connects to remote AI Power Guild bots (Hermes today) over an embedded SSH client, multiplexing a host shell, a Hermes-attach terminal, and a dashboard port-forward over a single connection. SSH keys are ed25519 held in the macOS Keychain; the dashboard tunnel is loopback-only.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
