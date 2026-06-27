@@ -7,10 +7,97 @@
 //! Keychain prompt).
 
 use super::*;
-use crate::keychain::MemoryKeyStore;
+use crate::keychain::{KeyStore, KeyStoreError, MemoryKeyStore, MemoryPublicKeyCache};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 fn signer() -> Ed25519Signer {
     Ed25519Signer::new(Box::new(MemoryKeyStore::new()))
+}
+
+/// A `KeyStore` wrapper that counts `load()` calls, so a test can prove the
+/// public-key cache avoids private-key reads (and thus the Keychain prompt).
+struct CountingKeyStore {
+    inner: MemoryKeyStore,
+    loads: Arc<AtomicUsize>,
+}
+
+impl KeyStore for CountingKeyStore {
+    fn load(&self) -> Result<Vec<u8>, KeyStoreError> {
+        self.loads.fetch_add(1, Ordering::SeqCst);
+        self.inner.load()
+    }
+    fn store_if_absent(&self, bytes: &[u8]) -> Result<bool, KeyStoreError> {
+        self.inner.store_if_absent(bytes)
+    }
+}
+
+#[test]
+fn public_cache_avoids_private_key_reads_for_public_openssh() {
+    let loads = Arc::new(AtomicUsize::new(0));
+    let store = CountingKeyStore {
+        inner: MemoryKeyStore::new(),
+        loads: loads.clone(),
+    };
+    let s = Ed25519Signer::new(Box::new(store))
+        .with_public_cache(Box::new(MemoryPublicKeyCache::new()));
+
+    // generate() decodes the key it just made — it must NOT re-read the store to
+    // derive the public key, and it back-fills the cache.
+    let pubkey = s.generate().expect("generate");
+    let after_generate = loads.load(Ordering::SeqCst);
+
+    // Subsequent public_openssh() calls answer from the cache: zero new reads.
+    assert_eq!(s.public_openssh().unwrap(), pubkey);
+    assert_eq!(s.public_openssh().unwrap(), pubkey);
+    assert_eq!(
+        loads.load(Ordering::SeqCst),
+        after_generate,
+        "public_openssh must not read the key store when the cache is warm"
+    );
+
+    // sign() still needs the private key (this is the only path that prompts).
+    let _ = s.sign(b"challenge").expect("sign");
+    assert!(
+        loads.load(Ordering::SeqCst) > after_generate,
+        "sign() reads the private key"
+    );
+}
+
+#[test]
+fn public_cache_miss_backfills_from_private_key() {
+    // Pre-provision a key, attach an EMPTY cache: the first public_openssh
+    // derives from the private key (one read) and back-fills, so the second
+    // call is a cache hit (no further read). Models an existing key from before
+    // the cache existed.
+    let seed = signer();
+    let seed_bytes = {
+        seed.generate().expect("seed generate");
+        seed.export_openssh_private().expect("export seed")
+    };
+
+    let loads = Arc::new(AtomicUsize::new(0));
+    let inner = MemoryKeyStore::new();
+    inner
+        .store_if_absent(seed_bytes.expose())
+        .expect("seed store"); // store_if_absent does not count as a load
+    let store = CountingKeyStore {
+        inner,
+        loads: loads.clone(),
+    };
+    let s = Ed25519Signer::new(Box::new(store))
+        .with_public_cache(Box::new(MemoryPublicKeyCache::new()));
+
+    let first = s.public_openssh().expect("derive");
+    let after_first = loads.load(Ordering::SeqCst);
+    assert!(after_first >= 1, "first call reads the private key");
+    let second = s.public_openssh().expect("cache hit");
+    assert_eq!(first, second);
+    assert_eq!(
+        loads.load(Ordering::SeqCst),
+        after_first,
+        "second call is a cache hit — no further private-key read"
+    );
 }
 
 #[test]

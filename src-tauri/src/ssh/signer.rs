@@ -27,7 +27,7 @@ use ssh_key::public::KeyData;
 use ssh_key::{Algorithm, LineEnding, PublicKey};
 use zeroize::Zeroize;
 
-use crate::keychain::{KeyStore, KeyStoreError};
+use crate::keychain::{KeyStore, KeyStoreError, PublicKeyCache};
 
 /// SSH algorithm identifier for the v1 ed25519 signer.
 pub const SSH_ED25519: &str = "ssh-ed25519";
@@ -132,13 +132,28 @@ pub trait Signer: Send + Sync {
 /// nothing keeps a long-lived plaintext copy in this struct.
 pub struct Ed25519Signer {
     store: Box<dyn KeyStore>,
+    /// Optional plaintext cache for the OpenSSH **public** key, so showing/
+    /// offering the public key does not unlock the Keychain (see
+    /// [`PublicKeyCache`]). `None` → always derive from the private key.
+    pub_cache: Option<Box<dyn PublicKeyCache>>,
 }
 
 impl Ed25519Signer {
     /// Wrap a key store. Does not generate; call [`Ed25519Signer::generate`] (or
     /// the `generate_key` command) to provision a key.
     pub fn new(store: Box<dyn KeyStore>) -> Self {
-        Self { store }
+        Self {
+            store,
+            pub_cache: None,
+        }
+    }
+
+    /// Attach a plaintext public-key cache. When present, `public_openssh`
+    /// answers from the cache (no Keychain access / OS prompt); a miss derives
+    /// from the private key once and back-fills the cache.
+    pub fn with_public_cache(mut self, cache: Box<dyn PublicKeyCache>) -> Self {
+        self.pub_cache = Some(cache);
+        self
     }
 
     /// Idempotently ensure a key exists, returning its OpenSSH public string.
@@ -168,7 +183,18 @@ impl Ed25519Signer {
         // `store_if_absent` returns false if a key raced in between the check and
         // the write; in that case we keep the existing one (idempotent).
         self.store.store_if_absent(secret.expose())?;
-        self.public_openssh()
+
+        // Derive the public string from the just-generated key (we already hold
+        // it decoded, so this needs no extra Keychain read) and back-fill the
+        // cache so later display/offer paths never prompt.
+        let public_openssh = private
+            .public_key()
+            .to_openssh()
+            .map_err(|e| SignerError::Encode(e.to_string()))?;
+        if let Some(cache) = &self.pub_cache {
+            cache.store(&public_openssh);
+        }
+        Ok(public_openssh)
     }
 
     /// Load + decode the stored private key into an `ssh-key` `PrivateKey`.
@@ -228,11 +254,25 @@ impl Signer for Ed25519Signer {
     }
 
     fn public_openssh(&self) -> Result<String, SignerError> {
+        // Fast path: the public key is non-secret, so answer from the plaintext
+        // cache without unlocking the Keychain (no OS prompt).
+        if let Some(cache) = &self.pub_cache {
+            if let Some(cached) = cache.load() {
+                return Ok(cached);
+            }
+        }
+
+        // Miss (or no cache): derive from the private key (one Keychain read)
+        // and back-fill the cache so the next call is prompt-free.
         let private = self.load_private()?;
         let public: &PublicKey = private.public_key();
-        public
+        let openssh = public
             .to_openssh()
-            .map_err(|e| SignerError::Encode(e.to_string()))
+            .map_err(|e| SignerError::Encode(e.to_string()))?;
+        if let Some(cache) = &self.pub_cache {
+            cache.store(&openssh);
+        }
+        Ok(openssh)
     }
 
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>, SignerError> {

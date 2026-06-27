@@ -55,10 +55,22 @@ pub fn app_ready() -> AppInfo {
 }
 
 /// Build the v1 signer over the platform key store (Keychain on Apple targets,
-/// in-memory elsewhere). The signer is cheap and stateless apart from the store,
-/// so we construct it per command rather than holding global state.
-fn signer() -> Ed25519Signer {
-    Ed25519Signer::new(default_key_store())
+/// in-memory elsewhere), with a plaintext public-key cache in the app-data dir.
+///
+/// The cache lets `public_openssh` answer without unlocking the Keychain, so the
+/// only path that prompts is the actual signature read during connect — the
+/// operator sees one prompt per connect instead of one per Keychain access. The
+/// signer is cheap and stateless apart from the store, so we build it per call.
+fn signer(app: &tauri::AppHandle) -> Ed25519Signer {
+    let base = Ed25519Signer::new(default_key_store());
+    match app.path().app_data_dir() {
+        Ok(dir) => base.with_public_cache(Box::new(crate::keychain::FilePublicKeyCache::new(
+            dir.join("signing_key.pub"),
+        ))),
+        // No app-data dir → fall back to the no-cache signer (still correct,
+        // just prompts to derive the public key).
+        Err(_) => base,
+    }
 }
 
 /// Generate the signing key if absent and return its OpenSSH public string.
@@ -66,8 +78,8 @@ fn signer() -> Ed25519Signer {
 /// Idempotent: if a key already exists, returns the existing public key without
 /// overwriting (KTD2). Never returns private material.
 #[tauri::command]
-pub fn generate_key() -> Result<String, String> {
-    signer().generate().map_err(|e| e.to_string())
+pub fn generate_key(app: tauri::AppHandle) -> Result<String, String> {
+    signer(&app).generate().map_err(|e| e.to_string())
 }
 
 /// Return the OpenSSH public key, or an error if no key is provisioned yet.
@@ -75,8 +87,8 @@ pub fn generate_key() -> Result<String, String> {
 /// The frontend's always-available "public key" surface calls this; if it
 /// returns the no-key error, the UI offers the generate flow.
 #[tauri::command]
-pub fn get_public_key() -> Result<String, String> {
-    signer().public_openssh().map_err(|e| e.to_string())
+pub fn get_public_key(app: tauri::AppHandle) -> Result<String, String> {
+    signer(&app).public_openssh().map_err(|e| e.to_string())
 }
 
 /// Export the OpenSSH **private** key to `path` with `0600` permissions (R17).
@@ -89,8 +101,8 @@ pub fn get_public_key() -> Result<String, String> {
 /// The private bytes are written to the file and never returned to the webview;
 /// the in-memory copy is zeroized on drop (`SecretBytes`).
 #[tauri::command]
-pub fn export_key(path: String) -> Result<(), String> {
-    let secret = signer()
+pub fn export_key(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let secret = signer(&app)
         .export_openssh_private()
         .map_err(|e| e.to_string())?;
     crate::fs::write_0600(std::path::Path::new(&path), secret.expose()).map_err(|e| e.to_string())
@@ -331,7 +343,7 @@ pub async fn connect(
     let addr = dial_addr(&bot.host);
     let host = host_part(&addr);
 
-    let signer: Arc<dyn Signer> = Arc::new(signer());
+    let signer: Arc<dyn Signer> = Arc::new(signer(&app));
     let decider = known_hosts(&app).map_err(ConnectFailedString::plain)?;
     let manager = state.manager.clone();
     let pending = state.pending_trust.clone();

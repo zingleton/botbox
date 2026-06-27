@@ -110,6 +110,81 @@ impl KeyStore for MemoryKeyStore {
     }
 }
 
+// ── Public-key cache (plaintext; avoids unlocking the Keychain to show/offer
+//    a *public* key) ──
+//
+// The public key is not secret. Reading the private key from the Keychain just
+// to derive the public key triggers a macOS authorization prompt on every call
+// (boot key panel + the publickey-auth offer), so the operator sees several
+// prompts per connect. Caching the OpenSSH public string in a plaintext file
+// lets `public_openssh` answer those paths without touching the Keychain — only
+// the actual signature read (`sign`) prompts. A cache miss falls back to
+// deriving from the private key and back-fills the cache.
+//
+// This is a best-effort optimization: all errors are swallowed (a failed
+// read/write just means a fall-through to the Keychain), so it never blocks an
+// operation.
+
+/// Plaintext cache for the OpenSSH **public** key string. Non-secret by design.
+pub trait PublicKeyCache: Send + Sync {
+    /// The cached public key, or `None` on a miss (absent / unreadable).
+    fn load(&self) -> Option<String>;
+    /// Persist the public key. Best-effort; failures are ignored by callers.
+    fn store(&self, public_openssh: &str);
+}
+
+/// File-backed [`PublicKeyCache`] (a plaintext `.pub` in the app-data dir).
+pub struct FilePublicKeyCache {
+    path: std::path::PathBuf,
+}
+
+impl FilePublicKeyCache {
+    pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+}
+
+impl PublicKeyCache for FilePublicKeyCache {
+    fn load(&self) -> Option<String> {
+        let s = std::fs::read_to_string(&self.path).ok()?;
+        let s = s.trim();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s.to_string())
+        }
+    }
+
+    fn store(&self, public_openssh: &str) {
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        // Public material — ordinary perms are fine. Best-effort.
+        let _ = std::fs::write(&self.path, format!("{public_openssh}\n"));
+    }
+}
+
+/// In-memory [`PublicKeyCache`] for tests.
+#[derive(Default)]
+pub struct MemoryPublicKeyCache {
+    inner: std::sync::Mutex<Option<String>>,
+}
+
+impl MemoryPublicKeyCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl PublicKeyCache for MemoryPublicKeyCache {
+    fn load(&self) -> Option<String> {
+        self.inner.lock().expect("cache mutex poisoned").clone()
+    }
+    fn store(&self, public_openssh: &str) {
+        *self.inner.lock().expect("cache mutex poisoned") = Some(public_openssh.to_string());
+    }
+}
+
 // ── Real macOS/iOS Keychain implementation ──
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
