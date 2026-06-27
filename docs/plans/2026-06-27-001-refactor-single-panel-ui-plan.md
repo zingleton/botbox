@@ -1,7 +1,7 @@
 ---
 title: "refactor: Single-panel top-nav UI layout"
 type: refactor
-status: active
+status: completed
 date: 2026-06-27
 ---
 
