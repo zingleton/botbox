@@ -51,6 +51,8 @@ export function renderKeyPanel(
 ): void {
   region.replaceChildren();
   region.setAttribute("data-testid", "key-panel");
+  // classList.add (not className=) so the router's `.hidden` toggle is preserved.
+  region.classList.add("key-panel");
 
   const title = document.createElement("div");
   title.className = "key-panel__title";
@@ -349,6 +351,18 @@ export function renderSelectedBotLine(
   );
 
   region.append(name, links);
+
+  // Surface a dashboard-tunnel error (e.g. wrong dashboard port) inline next to
+  // the disabled Dashboard link, so the error class still reaches the operator
+  // now that the dedicated tunnel bar is gone.
+  if (state.connection.phase === "connected" && state.connection.tunnel?.error) {
+    const err = document.createElement("span");
+    err.className = "selected-bot__tunnel-error";
+    err.setAttribute("data-testid", "tunnel-error");
+    err.textContent =
+      state.connection.tunnel.error.message || "Dashboard port unavailable.";
+    region.appendChild(err);
+  }
 }
 
 /** The Dashboard link only works once the loopback tunnel is live. */
@@ -415,93 +429,6 @@ export function applyContentView(
   setHidden(regions.list, view !== "bots");
   setHidden(regions.form, view !== "bots");
   setHidden(regions.key, view !== "settings");
-}
-
-// ── Dashboard tunnel bar (U6 / R12, R13) ────────────────────────────────────
-
-export interface TunnelBarHandlers {
-  /** Copy the loopback dashboard URL to the clipboard. */
-  onCopyUrl: (url: string) => void;
-  /** Open the dashboard in the default browser. */
-  onOpenDashboard: (url: string) => void;
-  /** Retry establishing the tunnel (e.g. after a wrong-port that has resolved). */
-  onRetry: () => void;
-}
-
-/**
- * Render the dashboard tunnel status line in the connected view (U6):
- *   - an active/inactive badge (inactive on teardown or wrong-port),
- *   - the copyable loopback URL when active,
- *   - an explicit "Open Dashboard" button when active, and
- *   - the wrong-port error + a retry when the eager probe found no listener.
- *
- * Only visible while `connected`; cleared otherwise. Pure: the caller wires the
- * handlers to the connection controller.
- */
-export function renderTunnelBar(
-  region: HTMLElement,
-  state: AppState,
-  handlers: TunnelBarHandlers,
-): void {
-  region.replaceChildren();
-
-  if (state.connection.phase !== "connected") {
-    region.dataset.tunnel = "hidden";
-    return;
-  }
-  const tunnel = state.connection.tunnel;
-  region.dataset.tunnel = tunnel?.active ? "active" : "inactive";
-  region.setAttribute("data-testid", "tunnel-bar");
-
-  const title = document.createElement("span");
-  title.className = "tunnel-bar__title";
-  title.textContent = "Dashboard";
-
-  const badge = document.createElement("span");
-  const active = !!tunnel?.active;
-  badge.className =
-    "tunnel-bar__badge" +
-    (active ? " tunnel-bar__badge--active" : " tunnel-bar__badge--inactive");
-  badge.setAttribute("data-testid", "tunnel-badge");
-  badge.dataset.active = active ? "true" : "false";
-  badge.textContent = active ? "Active" : "Inactive";
-
-  region.append(title, badge);
-
-  if (active && tunnel?.url) {
-    const url = document.createElement("code");
-    url.className = "tunnel-bar__url";
-    url.setAttribute("data-testid", "tunnel-url");
-    url.textContent = tunnel.url;
-    url.title = tunnel.url;
-
-    const actions = document.createElement("div");
-    actions.className = "tunnel-bar__actions";
-    actions.append(
-      button("Copy URL", "tunnel-copy", () => handlers.onCopyUrl(tunnel.url!)),
-      button(
-        "Open Dashboard",
-        "open-dashboard",
-        () => handlers.onOpenDashboard(tunnel.url!),
-        { primary: true },
-      ),
-    );
-    region.append(url, actions);
-    return;
-  }
-
-  // Inactive: if a wrong-port error is present, surface it + a retry (U7 styles
-  // the message; U6 wires the affordance).
-  if (tunnel?.error) {
-    const err = document.createElement("span");
-    err.className = "tunnel-bar__error";
-    err.setAttribute("data-testid", "tunnel-error");
-    err.textContent = tunnel.error.message || "Dashboard port unavailable.";
-    region.append(
-      err,
-      button("Retry", "tunnel-retry", () => handlers.onRetry()),
-    );
-  }
 }
 
 /**

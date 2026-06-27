@@ -223,6 +223,13 @@ body {
   font-weight: 600;
 }
 
+/* Inline dashboard-tunnel error (e.g. wrong dashboard port), shown next to the
+   disabled Dashboard link now that the dedicated tunnel bar is gone. */
+.selected-bot__tunnel-error {
+  font-size: 12px;
+  color: var(--danger);
+}
+
 /* ── Content area: one surface at a time ── */
 
 .content {
@@ -377,16 +384,7 @@ body {
   width: 100%;
 }
 
-/* ── Add/edit bot form (U3) ── */
-
-.sidebar__form:empty {
-  display: none;
-}
-
-.sidebar__form {
-  border-top: 1px solid hsl(var(--border));
-  padding: 12px;
-}
+/* ── Add/edit bot form ── */
 
 .bot-form {
   display: flex;
@@ -447,148 +445,6 @@ body {
 .bot-form__actions {
   display: flex;
   gap: 8px;
-}
-
-/* ── Workspace ── */
-
-.workspace {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  background: var(--bg);
-}
-
-.status-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 9px 16px;
-  border-bottom: 1px solid hsl(var(--border));
-  background: hsl(var(--card));
-  font-size: 13px;
-  min-height: 38px;
-}
-
-.status-bar__label {
-  font-weight: 500;
-}
-
-.status-bar[data-phase="connected"] .status-bar__label {
-  color: hsl(var(--success));
-}
-
-.status-bar[data-phase="connecting"] .status-bar__label {
-  color: hsl(var(--primary));
-}
-
-.status-bar[data-phase="connection-lost"] .status-bar__label {
-  color: var(--danger);
-}
-
-.status-bar__error {
-  color: var(--danger);
-}
-
-/* Push the primary Connect affordance to the trailing edge of the status bar. */
-.status-bar__connect {
-  margin-left: auto;
-}
-
-/* Dashboard tunnel bar (U6 / R12, R13). Hidden until connected. */
-.tunnel-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 9px 16px;
-  border-bottom: 1px solid hsl(var(--border));
-  background: hsl(var(--secondary));
-  font-size: 13px;
-  min-height: 38px;
-}
-
-.tunnel-bar[data-tunnel="hidden"] {
-  display: none;
-}
-
-.tunnel-bar__title {
-  color: var(--fg-dim);
-  text-transform: uppercase;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-}
-
-.tunnel-bar__badge {
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 9px;
-  border-radius: 999px;
-  border: 1px solid hsl(var(--border));
-}
-
-.tunnel-bar__badge--active {
-  color: hsl(var(--primary-foreground));
-  background: hsl(var(--primary));
-  border-color: hsl(var(--primary));
-}
-
-.tunnel-bar__badge--inactive {
-  color: var(--fg-dim);
-  background: transparent;
-}
-
-.tunnel-bar__url {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: hsl(var(--primary));
-  user-select: all;
-}
-
-.tunnel-bar__actions {
-  display: flex;
-  gap: 8px;
-  margin-left: auto;
-}
-
-.tunnel-bar__error {
-  color: var(--danger);
-}
-
-/* ── Terminals: forest-dark "screens" ── */
-
-.terminals {
-  flex: 1;
-  display: grid;
-  grid-template-rows: 1fr 1fr;
-  gap: 1px;
-  background: hsl(var(--term-border));
-  min-height: 0;
-}
-
-.terminal-pane {
-  display: flex;
-  flex-direction: column;
-  background: hsl(var(--term-bg));
-  min-height: 0;
-}
-
-.terminal-pane__label {
-  padding: 6px 12px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: hsl(var(--term-muted));
-  background: hsl(var(--term-elev));
-  border-bottom: 1px solid hsl(var(--term-border));
-}
-
-.terminal-host {
-  flex: 1;
-  min-height: 0;
-  padding: 6px 8px;
-  background: hsl(var(--term-bg));
 }
 
 /* ── Buttons ── */
@@ -664,11 +520,9 @@ body {
   }
 }
 
-/* ── SSH key surface (U2 / R2) ── */
+/* ── SSH key surface (Settings view) ── */
 
-.sidebar__key {
-  border-top: 1px solid hsl(var(--border));
-  padding: 12px;
+.key-panel {
   display: flex;
   flex-direction: column;
   gap: 8px;
