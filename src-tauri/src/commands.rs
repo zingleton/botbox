@@ -20,9 +20,11 @@
 //!   `Display` is redaction-safe and `SecretBytes` redacts in `Debug`.
 
 use serde::Serialize;
+use tauri::Manager;
 
 use crate::keychain::default_key_store;
 use crate::ssh::signer::{Ed25519Signer, Signer};
+use crate::store::{Bot, BotInput, BotInventory, Inventory, JsonBotStore};
 
 /// Minimal "the webview booted" handshake (moved from `lib.rs` in U2). The
 /// frontend calls it once on startup; the response is informational.
@@ -115,6 +117,69 @@ fn write_private_key_0600(path: &str, bytes: &[u8]) -> std::io::Result<()> {
         f.flush()?;
         Ok(())
     }
+}
+
+// ── Bot inventory commands (U3 / R4, R5, R6) ───────────────────────────────
+//
+// The inventory persists to `bots.json` in the Tauri app-data dir, written
+// `0600` (KTD10). The path is resolved per call from the `AppHandle` and the
+// store is path-injected into `JsonBotStore`, mirroring U2's storage-trait seam
+// (`store.rs` holds the `BotStore` trait + the `MemoryBotStore` fake the unit
+// tests use, so tests never write to the real app-data dir).
+//
+// Defaults for a blank attach command / dashboard port are applied inside
+// `Inventory::add`/`update` from the single source of truth in `store.rs`
+// (`DEFAULT_ATTACH_COMMAND` = `tmux attach -t hermes`, `DEFAULT_DASHBOARD_PORT`
+// = 9119). U4/U5/U6 read the already-defaulted values off the persisted `Bot`.
+
+/// Build a path-injected inventory over the Tauri app-data dir. The directory is
+/// created lazily on first save by `JsonBotStore`.
+fn inventory(app: &tauri::AppHandle) -> Result<Inventory<JsonBotStore>, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("could not resolve app data dir: {e}"))?;
+    Ok(Inventory::new(JsonBotStore::new(dir)))
+}
+
+/// List saved bots for selection (R5).
+#[tauri::command]
+pub fn list_bots(app: tauri::AppHandle) -> Result<Vec<Bot>, String> {
+    inventory(&app)?.list().map_err(|e| e.to_string())
+}
+
+/// Return the full inventory document (bots + the persisted selection). The
+/// connection layer (U4) reads `selected_bot_id` to know which bot to connect.
+#[tauri::command]
+pub fn get_inventory(app: tauri::AppHandle) -> Result<BotInventory, String> {
+    inventory(&app)?.inventory().map_err(|e| e.to_string())
+}
+
+/// Add a bot (name + host required; blank attach/port get the Hermes defaults).
+/// Returns the stored bot with its assigned id and resolved fields (R4, R6).
+#[tauri::command]
+pub fn add_bot(app: tauri::AppHandle, input: BotInput) -> Result<Bot, String> {
+    inventory(&app)?.add(input).map_err(|e| e.to_string())
+}
+
+/// Edit an existing bot in place (R4). Only the targeted bot changes.
+#[tauri::command]
+pub fn update_bot(app: tauri::AppHandle, id: String, input: BotInput) -> Result<Bot, String> {
+    inventory(&app)?.update(&id, input).map_err(|e| e.to_string())
+}
+
+/// Remove a bot (R4). Clears the selection if it pointed at the removed bot.
+#[tauri::command]
+pub fn remove_bot(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    inventory(&app)?.remove(&id).map_err(|e| e.to_string())
+}
+
+/// Record the active-bot selection (R5). `None` clears it. U4 reads this pointer.
+#[tauri::command]
+pub fn select_bot(app: tauri::AppHandle, id: Option<String>) -> Result<(), String> {
+    inventory(&app)?
+        .select(id.as_deref())
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

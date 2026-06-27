@@ -247,3 +247,36 @@ export function isFirstRun(state: AppState): boolean {
 export function isIdle(state: AppState): boolean {
   return state.connection.phase === "idle";
 }
+
+/**
+ * Visual state of a single bot-list item (U3). Derived purely from the KTD9
+ * connection phase + which bot it concerns, so U4 only has to dispatch the
+ * connect/teardown actions and the list re-renders the right item state:
+ *   - `connected`    — this bot is the live connection (highlight + Disconnect).
+ *   - `transitioning`— a connect/teardown is in flight (the whole list locks).
+ *   - `default`      — not connected.
+ */
+export type BotItemState = "default" | "connected" | "transitioning";
+
+/**
+ * The bot the connection phase is *about* (connecting/connected/disconnected/
+ * connection-lost all carry a `botId`); `null` when idle. U4 reads this to know
+ * which bot the live connection belongs to.
+ */
+export function activeConnectionBotId(state: AppState): string | null {
+  const c = state.connection;
+  return c.phase === "idle" ? null : c.botId;
+}
+
+/** True while a connect/teardown is in flight — the bot list is locked (U3). */
+export function isTransitioning(state: AppState): boolean {
+  return state.connection.phase === "connecting";
+}
+
+/** Resolve the visual state for one bot item. */
+export function botItemState(state: AppState, botId: string): BotItemState {
+  const c = state.connection;
+  if (c.phase === "connecting" && c.botId === botId) return "transitioning";
+  if (c.phase === "connected" && c.botId === botId) return "connected";
+  return "default";
+}

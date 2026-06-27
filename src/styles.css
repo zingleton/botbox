@@ -140,6 +140,112 @@ body {
   font-size: 12px;
 }
 
+.bot-item__main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Connected: highlighted, with the Disconnect affordance. */
+.bot-item--connected {
+  background: var(--bg-elev);
+  border-color: var(--ok);
+}
+
+/* Transitioning: the item being connected; the whole list is locked. */
+.bot-item--transitioning {
+  border-color: var(--accent);
+}
+
+.bot-list--locked {
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+.bot-item__actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.bot-item__actions .btn,
+.bot-item__disconnect {
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+.bot-item__disconnect {
+  margin-top: 6px;
+  align-self: flex-start;
+}
+
+.bot-list__add {
+  margin-top: 10px;
+  width: 100%;
+}
+
+/* ── Add/edit bot form (U3) ── */
+
+.sidebar__form:empty {
+  display: none;
+}
+
+.sidebar__form {
+  border-top: 1px solid var(--border);
+  padding: 12px;
+}
+
+.bot-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.bot-form__title {
+  margin: 0;
+  font-size: 14px;
+}
+
+.bot-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bot-form__label {
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.bot-form__input {
+  font: inherit;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.bot-form__input:focus {
+  outline: none;
+  border-color: var(--accent-dim);
+}
+
+.bot-form__hint {
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.bot-form__error {
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.bot-form__actions {
+  display: flex;
+  gap: 8px;
+}
+
 /* ── Workspace ── */
 
 .workspace {

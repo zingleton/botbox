@@ -10,16 +10,50 @@
 
 import "./styles.css";
 import { invoke } from "@tauri-apps/api/core";
-import { Store, type AppState } from "./state";
+import { Store, type AppState, type Bot, isFirstRun } from "./state";
 import {
   renderSidebar,
   renderStatusBar,
   renderKeyPanel,
   type KeyViewState,
 } from "./render";
+import {
+  BotsController,
+  renderBotList,
+  renderBotForm,
+  type BotInput,
+  type BotFormState,
+} from "./bots";
 import { createTerminals, type TerminalPane, type PaneKind } from "./terminal";
 
 const store = new Store();
+
+/**
+ * Bot inventory controller (U3). Bridges the backend bot commands to the KTD9
+ * store and owns the add/edit form + select-with-confirm. The backend bridge
+ * narrows `invoke` to the five U3 commands; `onDisconnect` is a U3 stub (U4
+ * wires the real teardown) so the connected-item Disconnect affordance exists
+ * and is testable now.
+ */
+const bots = new BotsController({
+  backend: {
+    listBots: () => invoke<Bot[]>("list_bots"),
+    addBot: (input: BotInput) => invoke<Bot>("add_bot", { input }),
+    updateBot: (id: string, input: BotInput) =>
+      invoke<Bot>("update_bot", { id, input }),
+    removeBot: (id: string) => invoke<void>("remove_bot", { id }),
+    selectBot: (id: string | null) => invoke<void>("select_bot", { id }),
+  },
+  getState: () => store.getState(),
+  dispatch: (action) => store.dispatch(action),
+  confirm: (message) => window.confirm(message),
+  onDisconnect: (botId) => {
+    // U4 owns the real teardown; until then, reflect the operator intent so the
+    // affordance is live and the state model exercised.
+    store.dispatch({ type: "disconnect", botId });
+  },
+  renderForm: (form: BotFormState | null) => renderForm(form),
+});
 
 // Terminals are created once and re-used across state changes.
 let panes: Record<PaneKind, TerminalPane> | null = null;
@@ -130,13 +164,24 @@ async function exportPrivateKey(): Promise<void> {
   }
 }
 
+function renderForm(form: BotFormState | null): void {
+  renderBotForm(el("bot-form-region"), form, bots.formHandlers());
+}
+
 function render(state: AppState): void {
-  renderSidebar(el("bot-list-region"), state, {
-    onSelectBot: (botId) => store.dispatch({ type: "select-bot", botId }),
-    // U2 wires the first-run CTA "Generate key" to the same flow as the
-    // persistent key panel. onAddBot (U3) stays omitted (renders disabled).
-    onGenerateKey: generateKey,
-  });
+  if (isFirstRun(state)) {
+    // Empty inventory: the first-run CTA (render.ts). U3 wires its "Add a bot"
+    // button to the controller's add flow (U1 shipped it disabled).
+    renderSidebar(el("bot-list-region"), state, {
+      onSelectBot: (botId) => store.dispatch({ type: "select-bot", botId }),
+      onGenerateKey: generateKey,
+      onAddBot: () => bots.openAdd(),
+    });
+  } else {
+    // Populated inventory: the bot list with KTD9-derived item states (U3),
+    // wired to the controller for select/add/edit/remove/disconnect.
+    renderBotList(el("bot-list-region"), state, bots.listHandlers());
+  }
   renderStatusBar(el("status-bar"), state);
   renderTerminals(state);
 }
@@ -149,6 +194,12 @@ function boot(): void {
 
   store.subscribe(render);
   renderKey();
+
+  // Load the persisted bot inventory (U3). A failure leaves the first-run CTA
+  // up rather than erroring the boot.
+  bots.load().catch((e) => {
+    console.warn("list_bots failed", e);
+  });
 
   // Reveal an already-provisioned key on startup so the surface is populated
   // without requiring a (re-)generate. A missing key is the expected first-run

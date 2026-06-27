@@ -9,6 +9,7 @@
 //! Later units extend the command set (see the plan's Output Structure):
 //!   - U2: `generate_key`, `get_public_key`, `export_key`
 //!   - U3: `list_bots`, `add_bot`, `update_bot`, `remove_bot`, `select_bot`
+//!     (+ `get_inventory`, returning bots + the persisted selection U4 reads)
 //!   - U4: `connect`, `disconnect`, `trust_host`, `remove_known_host`
 //!   - U5: `pty_write`, `pty_resize` (+ `ipc::Channel` raw byte streams)
 //!   - U6: `open_tunnel`, `open_dashboard`
@@ -23,6 +24,7 @@
 pub mod commands;
 pub mod keychain;
 pub mod ssh;
+pub mod store;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -36,6 +38,12 @@ pub fn run() {
             commands::generate_key,
             commands::get_public_key,
             commands::export_key,
+            commands::list_bots,
+            commands::get_inventory,
+            commands::add_bot,
+            commands::update_bot,
+            commands::remove_bot,
+            commands::select_bot,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Botbox");
