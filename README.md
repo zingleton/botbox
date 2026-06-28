@@ -114,6 +114,55 @@ need the native build chain for the embedded SSH stack:
 > documented alternative — but switching it is a change to a deliberately-pinned
 > `russh 0.54` dependency (see `src-tauri/Cargo.toml`), so verify with `cargo test`.
 
+### iOS
+
+iOS reuses the embedded-SSH stack unchanged: the same `russh` client, the same
+`KeyStore` seam, and the **same Keychain backend** as macOS — the storage code is
+gated on `cfg(any(target_os = "macos", target_os = "ios"))` and needs no edits to
+build for iPhone/iPad.
+
+Toolchain (in addition to the common Rust + pnpm setup above):
+
+- **Full Xcode** (not just the Command Line Tools) — provides the iOS SDK and the
+  Simulator. After installing, point the toolchain at it:
+
+  ```bash
+  sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+  sudo xcodebuild -license accept
+  ```
+
+- **iOS Rust targets**:
+
+  ```bash
+  rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+  ```
+
+- Generate the Xcode project once (creates `src-tauri/gen/apple/`, which is
+  committed), then run on the Simulator or a device:
+
+  ```bash
+  pnpm tauri ios init        # scaffold the Xcode project + entitlements
+  pnpm tauri ios dev         # build + run on the Simulator (hot-reloads the webview)
+  pnpm tauri ios build       # produce an .ipa (requires signing)
+  ```
+
+**Keychain on iOS — behavioral differences from macOS:**
+
+- **Signing is required to write keys on a device.** `SecItemAdd` needs the
+  `keychain-access-groups` entitlement, derived from the bundle id via a valid
+  provisioning profile. Set your Apple Developer **team** in Xcode (Signing &
+  Capabilities) before building for a physical device, or `add` fails at runtime
+  with `errSecMissingEntitlement (-34018)`. The **Simulator** does not enforce
+  this — it runs with no team configured, which is the fastest path to a first test.
+- **No authorization prompts.** iOS never prompts an app for its own Keychain
+  items, so the public-key cache that exists to dodge macOS's auth panels is
+  harmless no-op overhead here — no change needed.
+- **Uninstalling the app wipes the key.** Since iOS 10.3 the system deletes an
+  app's Keychain items on uninstall, so a reinstall generates a fresh ed25519 key
+  that must be re-provisioned onto the bot's `authorized_keys`. (On macOS the login
+  Keychain survives reinstalls.) The key still persists across normal launches and
+  backgrounding.
+
 ### Code-signing & the Keychain (distribution)
 
 For local development the unsigned build works. **For distribution you must
