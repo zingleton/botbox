@@ -127,6 +127,21 @@ without collapsing the failure distinctions R13/AE5 require.
   Populating the registry is the seam where the deferred provisioning build
   connects; v1 uses a minimal insert path so the endpoint is testable.
 
+- KTD10. **botbox gets its Guild session from a one-time connect code, not a
+  pasted token.** The member enters the same Supabase magic-link OTP they already
+  receive (email / `/welcome`); botbox exchanges it directly with Supabase GoTrue
+  (`/auth/v1/verify`) for a `{ access_token, refresh_token }` session, stores it in
+  the OS secret store, and owns its own refresh-token family (single-use rotation
+  via GoTrue), so it stays alive without contending with `guild-connect`. The
+  resulting `access_token` is the same Supabase bearer the cert endpoint already
+  validates. This works on desktop and phone (no CLI/credential-file needed) and is
+  the zero-friction path the brainstorm promised; reading `guild-connect`'s saved
+  `~/.config/ai-power-guild/credentials.json` while fresh is an optional desktop
+  convenience, not the primary mechanism. The session is the member's full Supabase
+  session (account-wide, not cert-scoped) — the same posture `guild-connect`
+  already holds; per-device revocation of *bot access* stays on the SSH roster
+  (keyed on the SSH key), independent of the session.
+
 ---
 
 ## High-Level Technical Design
@@ -420,41 +435,64 @@ revoke); `app/api/account/git-access/route.ts` DELETE revoke shape.
 
 ### Phase 2 — botbox client certificate flow (botbox)
 
-### U5. Guild HTTP client and bearer-token holding
+### U5. Guild session + HTTP client
 
-**Goal:** A Rust module that holds the Guild bearer token and fetches a
-certificate, with a typed result and typed errors.
+**Goal:** Hold a Guild session obtained from a one-time connect code, keep it
+fresh, and fetch certificates — with typed results and typed errors.
 **Requirements:** R10, R12, R13.
 **Dependencies:** U3 (endpoint contract; developed against a mock).
 **Files:** `src-tauri/Cargo.toml` (+`reqwest`, rustls), `src-tauri/src/guild/mod.rs`,
-`src-tauri/src/guild/client.rs`, `src-tauri/src/guild/guild_test.rs`,
-`src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`.
-**Approach:** `reqwest` client over **HTTPS only** (rustls WebPKI roots), scoped
-to the Guild host. "Pinned to the Guild host" means the client only contacts that
-hostname; TLS *certificate* pinning is deferred and the residual rogue-CA risk is
-recorded in Risks. Secure token storage reuses the Keychain `KeyStore` shape (a
-parallel secret item) with `set_guild_token` / `clear_guild_token` /
-`guild_status` commands — see the Windows storage decision in Open Questions.
-`fetch_certificate(guild_bot_id, public_openssh) -> Result<IssuedCert, GuildError>`
-where `IssuedCert` carries `#[serde(rename_all = "camelCase")]` and binds the
-pinned contract `{ certificate, host_public_key, host_key_vouched, valid_before }`
-(`valid_before` is unix seconds, `i64`); `GuildError` variants map to the KTD4
-error classes (unreachable, auth-expired, not-owner, signing-failure). For v1 the
-token is set by pasting it from the Guild web app; a richer OAuth/device-code
-login is deferred (see the onboarding decision in Open Questions).
+`src-tauri/src/guild/client.rs`, `src-tauri/src/guild/session.rs`,
+`src-tauri/src/guild/guild_test.rs`, `src-tauri/src/commands.rs`,
+`src-tauri/src/lib.rs`.
+**Approach:** `reqwest` client over **HTTPS only** (rustls WebPKI roots), scoped to
+two hosts: the Guild app (cert issuance) and the project's Supabase GoTrue host
+(session exchange/refresh). TLS *certificate* pinning is deferred; the residual
+rogue-CA risk is in Risks. Session acquisition (KTD10): a `connect_guild(email,
+code)` command exchanges the member's one-time connect code — the Supabase
+magic-link OTP from the email / `/welcome` page — directly with GoTrue
+(`POST {supabase}/auth/v1/verify` with `{ email, token: code, type: "email" }`,
+header `apikey: <anon key>`), yielding `{ access_token, refresh_token, expires_at }`.
+botbox stores this session in the OS secret store (Keychain shape; Windows store is
+the Open-Questions decision) and owns its **own** refresh-token family — it refreshes
+near expiry via `POST {supabase}/auth/v1/token?grant_type=refresh_token` (single-use
+rotation), so it never contends with `guild-connect`'s session. Optional desktop
+convenience: if `~/.config/ai-power-guild/credentials.json` exists and its
+`access_token` is still fresh, borrow it read-only (do NOT refresh it — that would
+rotate `guild-connect`'s single-use token). `disconnect_guild` and `guild_status`
+round out the command surface. `fetch_certificate(guild_bot_id, public_openssh)`
+refreshes the access token if near expiry, then calls the cert endpoint with it as
+`Authorization: Bearer`, returning `Result<IssuedCert, GuildError>` where
+`IssuedCert` carries `#[serde(rename_all = "camelCase")]` and binds the pinned
+contract `{ certificate, host_public_key, host_key_vouched, valid_before }`
+(`valid_before` is unix seconds, `i64`). `GuildError` variants map to the KTD4
+error classes; a failed/expired refresh surfaces as `GuildAuthExpired` →
+"reconnect to the Guild" (re-enter a code), and a bad/expired connect code surfaces
+distinctly from `connect_guild` (a login failure, not a per-connect cert failure).
 **Patterns to follow:** `keychain.rs` (`KeyStore` trait + Memory/Keychain impls,
-`default_key_store`); `commands.rs` per-call store construction and command
-registration in `lib.rs`.
+`default_key_store`); `guild-connect`'s `credentials.mjs` for the single-use
+refresh-rotation logic to port; `commands.rs` per-call store construction and
+command registration in `lib.rs`.
 **Test scenarios:**
+- `connect_guild` with a valid code → session stored; a bad/expired code → distinct
+  login-failure error, nothing stored.
 - Happy path against a hermetic mock Guild HTTP server → returns `IssuedCert` with
   certificate + host key parsed.
+- Access token near expiry → auto-refreshes (rotates the refresh token) before the
+  cert call; the new session is persisted.
+- Refresh fails (refresh token revoked/expired) → `GuildError::AuthExpired`
+  (reconnect required); the stale session is cleared.
 - 401 → `GuildError::AuthExpired`; connection-refused/timeout →
   `GuildError::Unreachable`; 403 → `GuildError::NotOwner`; 5xx →
   `GuildError::SigningFailure` — each distinct.
-- Token round-trips through the secure store; a missing token yields a distinct
-  pre-flight error (no HTTP attempted).
-**Execution note:** Stand up an in-process mock Guild server in the test, mirroring
-the in-process russh server in `connection_test.rs`.
+- Session round-trips through the secure store; no session yields a distinct
+  pre-flight error (no cert HTTP attempted).
+- Desktop-credential borrow: a fresh `credentials.json` is used read-only; a stale
+  one is ignored (botbox uses its own session) — `guild-connect`'s refresh token is
+  never rotated by botbox.
+**Execution note:** Stand up an in-process mock Guild server (and a mock GoTrue
+verify/refresh) in the test, mirroring the in-process russh server in
+`connection_test.rs`.
 
 ### U6. Cert-aware `Signer` seam
 
@@ -574,8 +612,9 @@ the Guild bot-id, and surface the new errors/events to the UI.
 `src-tauri/src/commands.rs`, `src-tauri/src/lib.rs`, `src/state.ts`,
 `src/connection.ts`.
 **Approach:** Add a `guild_bot_id` field to `Bot` (serde-optional for back-compat).
-In the `connect` command: resolve the selected bot → ensure a Guild token →
-emit the `fetch-certificate` stage → `guild::fetch_certificate(guild_bot_id,
+In the `connect` command: resolve the selected bot → ensure a live Guild session
+(refresh if near expiry; `GuildAuthExpired` → reconnect) → emit the
+`fetch-certificate` stage → `guild::fetch_certificate(guild_bot_id,
 public_openssh)` → pass the `IssuedCert` (cert + vouched host key) into
 `connection::connect` → on `CertExpired`, re-fetch once and retry. Render the new
 `connect-failed` kinds in the frontend.
@@ -637,8 +676,8 @@ unit tests; treat the manual verification as the completion gate.
   fails with `GuildUnreachable` regardless of any locally held unexpired cert —
   the "holds no unexpired certificate" branch of R13/AE5 is therefore moot in v1,
   and cached-cert reuse is deferred.
-- A richer Guild login (OAuth / device-code) in botbox — v1 sets the bearer token
-  by paste from the Guild web app.
+- A full browser/OAuth/SSO login flow in botbox — v1 acquires the session from the
+  one-time connect-code exchange (KTD10).
 - The no-public-internet WireGuard overlay (the next hardening phase R18 protects).
 
 **Outside this product's identity**
@@ -690,8 +729,11 @@ unit tests; treat the manual verification as the completion gate.
   bots (U10); a TTL floor keeps a cert from being born already-expired.
 - **Bot-owner registry population depends on the deferred provisioning build.** v1
   needs a minimal insert path or the ownership check (R4) has nothing to read.
-- **botbox has no Guild login today.** Token acquisition is net-new; v1 uses a
-  pasted token, which is a real (if minimal) new surface to secure.
+- **botbox has no Guild login today.** Session acquisition is net-new; v1 exchanges
+  a one-time connect code for a Supabase session and must implement single-use
+  refresh-token rotation (port `guild-connect`'s `credentials.mjs` logic) — a real
+  new surface to secure. The session is account-wide (the member's full Supabase
+  session), the same posture `guild-connect` already holds.
 - **Cross-repo contract drift.** The `IssuedCert` JSON shape is the interface;
   changing it requires touching both repos. The error taxonomy is mirrored 1:1
   between `pipeline.rs` and `src/state.ts`.
@@ -709,11 +751,6 @@ unit tests; treat the manual verification as the completion gate.
 
 Deferred to implementation; each has a working default.
 
-- **Guild token-acquisition UX for v1.** Default: paste a bearer token from the
-  Guild web app into botbox; OAuth/device-code login deferred. This is the largest
-  gap against the brainstorm's zero-friction promise — pasting a token on a new
-  phone is itself manual credential handling. Decide whether v1 ships paste-token
-  or a minimal device-code login.
 - **Bearer-token storage on Windows.** macOS uses the Keychain; Windows'
   `default_key_store` is memory-only today. Decide: add a Windows Credential
   Manager (DPAPI) store for the token, or document and accept the memory-only risk
@@ -792,6 +829,12 @@ Deferred to implementation; each has a working default.
 - aisupply: `lib/auth/bearer.ts`, `app/api/account/git-access/route.ts`,
   `supabase/migrations/0022_forgejo_backend.sql`, `lib/config.ts` — the auth,
   per-device-credential, migration, and env-secret patterns Phase 1 mirrors.
+- The Guild connect-code flow (KTD10): aisupply `lib/auth/connect-code.ts` (mints
+  the Supabase magic-link OTP) and `guild-connect`'s `scripts/connect.mjs` +
+  `scripts/credentials.mjs` — the GoTrue `/auth/v1/verify` exchange, the
+  `{ access_token, refresh_token, expires_at }` session, single-use refresh
+  rotation, and the `~/.config/ai-power-guild/credentials.json` store botbox reuses
+  or re-implements in U5.
 - SSH-CA best practices (OpenSSH `PROTOCOL.certkeys`, ssh-keygen(1), sshd_config(5),
   Smallstep, Teleport, Netflix BLESS): separate user/host CAs, short TTL with
   backdated start, `AuthorizedPrincipalsFile`, deny-future-issuance, and the
