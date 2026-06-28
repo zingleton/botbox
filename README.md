@@ -2,9 +2,9 @@
 
 **Botbox is the companion desktop SSH client for [AI Power Guild](https://aipowerguild.com) bots.**
 
-It is a Tauri 2 macOS app with a Rust backend that holds a single embedded
-[`russh`](https://github.com/Eugeny/russh) connection to a remote bot and
-multiplexes three things over it at once:
+It is a [Tauri 2](https://v2.tauri.app/) app with a Rust backend that holds a
+single embedded [`russh`](https://github.com/Eugeny/russh) connection to a remote
+bot and multiplexes three things over it at once:
 
 - an interactive **host-shell** terminal,
 - a **Hermes-attach** terminal (the live agent session), and
@@ -14,18 +14,22 @@ Reaching a remote agent normally means hand-rolling SSH: generate a key, get it
 onto the box, remember IPs, open a shell, attach to the running session, and set
 up a port-forward before the dashboard is reachable. Botbox collapses that into a
 few clicks — and because the SSH client is *embedded* (not a shell-out to system
-`ssh`), the same key and the same codepath are designed to carry forward to other
-platforms later.
+`ssh`), the same key and the same codepath carry forward across every platform
+Tauri targets. **We will provide builds for macOS, Windows, iOS, and Android**
+from this one codebase.
 
 Botbox shares the AI Power Guild design language with the Guild web app — they
 are the same product family. **Hermes** is the supported bot type in v1; other
 bot types are reachable by configuration, not by forking core logic (see
 [Extending to other bots](docs/extending-to-other-bots.md)).
 
-> **Status:** v1, macOS only. Bot inventory and key provisioning are **manual**
-> (copy/paste). Deeper integration with the AI Power Guild web app — pulling bot
-> IPs from the Guild's inventory and pushing your public key for provisioning — is
-> the planned next step and is **not** built yet. See [Roadmap](#roadmap).
+> **Status:** v1. **macOS** is the supported, key-persistent build; **Windows**
+> runs today as a dev build with an in-memory-key caveat (see
+> [Install / build](#install--build)); **iOS / Android** are planned. Bot
+> inventory and key provisioning are **manual** (copy/paste). Deeper integration
+> with the AI Power Guild web app — pulling bot IPs from the Guild's inventory and
+> pushing your public key for provisioning — is the planned next step and is
+> **not** built yet. See [Roadmap](#roadmap).
 
 ---
 
@@ -57,22 +61,58 @@ bot types are reachable by configuration, not by forking core logic (see
 
 ## Install / build
 
-Botbox is built with [Tauri 2](https://v2.tauri.app/). You need:
+Botbox is built with [Tauri 2](https://v2.tauri.app/). Every platform needs:
 
 - **Rust** (stable; the project's MSRV is 1.77.2) — install via [rustup](https://rustup.rs/).
 - **pnpm** and **Node.js** — `npm i -g pnpm`.
-- **macOS** with Xcode Command Line Tools (`xcode-select --install`) for the
-  system frameworks Tauri and the Keychain backend link against.
+
+Then the per-platform native toolchain below. The common run/build commands are:
 
 ```bash
 pnpm install          # frontend deps (xterm.js, fonts, Tauri CLI)
 
 pnpm tauri dev        # run the app in development
-pnpm tauri build      # produce an installable macOS bundle (.app + .dmg)
+pnpm tauri build      # produce an installable bundle for the host OS
 ```
 
-`pnpm tauri build` writes the bundle under
-`src-tauri/target/release/bundle/` (a `Botbox.app` and a `.dmg`).
+### macOS
+
+- **Xcode Command Line Tools** (`xcode-select --install`) for the system
+  frameworks Tauri and the Keychain backend link against.
+
+`pnpm tauri build` writes a `Botbox.app` and a `.dmg` under
+`src-tauri/target/release/bundle/`. The ed25519 private key is stored in the macOS
+**Keychain** and persists across launches.
+
+### Windows
+
+The webview uses the **WebView2 runtime** (preinstalled on Windows 11). You also
+need the native build chain for the embedded SSH stack:
+
+- **Visual Studio C++ Build Tools** (the "Desktop development with C++" workload)
+  — provides the MSVC compiler/linker Cargo's `x86_64-pc-windows-msvc` toolchain
+  links through.
+- **NASM** and **CMake** — `russh`'s default `aws-lc-rs` crypto backend compiles
+  native C/assembly at build time and needs both. Install via winget:
+
+  ```powershell
+  winget install NASM.NASM Kitware.CMake
+  ```
+
+  Make sure `nasm` and `cmake` are on `PATH` (open a fresh terminal after
+  installing), then `pnpm install` and `pnpm tauri dev`. `pnpm tauri build
+  --bundles msi,nsis` produces a Windows installer.
+
+> **⚠️ Key-storage caveat on Windows.** There is no Windows Keychain backend yet,
+> so the ed25519 private key falls back to an **in-memory store** — it is **not
+> persisted** and is lost when the app exits, meaning each launch generates a fresh
+> key you must re-provision onto the bot. The connect flow is fully exercisable; a
+> Windows Credential Manager / DPAPI key store (behind the existing `Signer` /
+> `KeyStore` trait seam) is the follow-up that makes Windows a durable client.
+>
+> If you'd rather avoid installing NASM + CMake, `russh`'s `ring` backend is a
+> documented alternative — but switching it is a change to a deliberately-pinned
+> `russh 0.54` dependency (see `src-tauri/Cargo.toml`), so verify with `cargo test`.
 
 ### Code-signing & the Keychain (distribution)
 

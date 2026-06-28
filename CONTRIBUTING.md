@@ -9,16 +9,20 @@ tests.
 Botbox is a [Tauri 2](https://v2.tauri.app/) app: a Rust backend (`src-tauri/`)
 and a vanilla-TypeScript / Vite frontend (`src/`). You need:
 
-- **Rust** stable (MSRV **1.77.2**) via [rustup](https://rustup.rs/). The SSH stack
-  (`russh`) and the Keychain backend (`security-framework`) link against macOS
-  system frameworks, so build on macOS.
+- **Rust** stable (MSRV **1.77.2**) via [rustup](https://rustup.rs/).
 - **pnpm** + **Node.js** — `npm i -g pnpm`.
-- **Xcode Command Line Tools** — `xcode-select --install`.
+- **macOS:** **Xcode Command Line Tools** — `xcode-select --install`. The Keychain
+  backend (`security-framework`) links against macOS system frameworks; on other
+  platforms it is `cfg`-gated out and the key store falls back to an in-memory impl.
+- **Windows:** **VS C++ Build Tools** (MSVC), plus **NASM** + **CMake**
+  (`winget install NASM.NASM Kitware.CMake`) for `russh`'s `aws-lc-rs` crypto
+  backend, and the **WebView2 runtime** (preinstalled on Win 11). See the
+  [README's Windows section](README.md#windows) for the in-memory-key caveat.
 
 ```bash
 pnpm install        # frontend deps + Tauri CLI
 pnpm tauri dev      # run the app
-pnpm tauri build    # build the macOS bundle (.app + .dmg)
+pnpm tauri build    # build an installable bundle for the host OS
 ```
 
 ## Project layout
