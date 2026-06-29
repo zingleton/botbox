@@ -749,18 +749,43 @@ unit tests; treat the manual verification as the completion gate.
 
 ## Open Questions
 
-Deferred to implementation; each has a working default.
+**Phase 2 decisions — resolved 2026-06-28** (to build the Mac-first first version):
 
-- **Bearer-token storage on Windows.** macOS uses the Keychain; Windows'
-  `default_key_store` is memory-only today. Decide: add a Windows Credential
-  Manager (DPAPI) store for the token, or document and accept the memory-only risk
-  for Windows v1.
-- **Un-provisioned-bot member story.** Until the provisioning build populates
-  `bot_owners`, a member can hold a valid cert and still be refused (bot not in
-  registry) or rejected (bot not yet CA-trusting). Decide the member-facing message
-  and next action for these early states, beyond distinguishing the error classes.
-- Whether the vouched host key rides in the cert-issuance response or a separate
-  bot-info call — default: inline in the issuance response (one round trip).
+- **RESOLVED — Session storage on Windows: memory-only for v1.** macOS uses the
+  Keychain; Windows keeps the Guild session (the refresh-token family) in memory
+  only, so the member re-enters a connect code each launch. Matches the existing
+  in-memory-only Windows SSH key; a Windows Credential Manager (DPAPI) `KeyStore`
+  is deferred (the seam is `default_key_store`). (U5.)
+- **RESOLVED — v1 bot registration + bot-id linkage: manual Studio insert.** Until
+  the Phase 3 provisioning build automates it, a bot is registered by an
+  operator/member inserting the `bot_owners` row in Supabase Studio (`bot_id`,
+  `owner_user_id`, and `host_public_key` copied from the bot's
+  `/etc/ssh/ssh_host_ed25519_key.pub`); the member pastes that `bot_id` into
+  botbox's `Bot.guild_bot_id` (U9). No new aisupply code — this is the "minimal
+  insert path" the Risks/Scope sections anticipated, and it makes Phase 2 testable
+  end-to-end against a hand-stood-up bot. A self-serve registration endpoint is a
+  Phase 3 follow-up.
+- **RESOLVED — Un-provisioned-bot member story: distinct, actionable messages.**
+  Each early state gets its own copy + next step, mapped onto the KTD4 error
+  classes U7/U9 surface, not just a distinct class:
+  - bot has no `guild_bot_id` set in botbox → "Link this bot to its Guild bot-id
+    first" (a pre-flight error, before any cert fetch — see U9).
+  - bot not in the registry (cert endpoint 403 / `NotOwner`) → "This bot isn't
+    registered with the Guild yet. Register it (add it to your account) before
+    connecting."
+  - bot in the registry but not yet CA-trusting (cert presented, sshd rejects →
+    `RemoteAuthFailure`, distinct from `CertExpired`) → "This bot isn't set up to
+    trust Guild certificates yet — finish provisioning it (Phase 3) and try again."
+- **RESOLVED — Connect code is verify-only in v1.** botbox exchanges a code the
+  member already has (from `/welcome` or email) via GoTrue `/auth/v1/verify`; it
+  does NOT trigger the OTP send (`/auth/v1/otp`) itself. `connect_guild(email,
+  code)` therefore takes both (verify needs the email). (U5 / KTD10.)
+- **RESOLVED — Vouched host key rides inline in the issuance response.** Phase 1
+  U3 implemented this (`{ hostPublicKey, hostKeyVouched }`); no separate bot-info
+  call.
+
+Remaining defaults (still open; each has a working default):
+
 - Roster device-label source — default: client-supplied label on first request,
   falling back to a generated name.
 - Whether botbox caches the vouched host key per bot or relies on the per-connect
